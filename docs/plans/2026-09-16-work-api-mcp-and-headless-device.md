@@ -1,6 +1,6 @@
 # Work API, MCP and the headless device — plan
 
-**Status:** Draft for discussion (2026-09-16). Nothing in this plan is implemented.
+**Status:** Draft, open decisions resolved (2026-09-16, see §8). Nothing in this plan is implemented.
 
 **Related:** [`ARCHITECTURE-DECISIONS.md`](../../ARCHITECTURE-DECISIONS.md) #3 (sync package boundary), #8 (additive data-model evolution); [`docs/sync-and-op-log/contributor-sync-model.md`](../sync-and-op-log/contributor-sync-model.md); [`docs/long-term-plans/sync-core-simplification-roadmap.md`](../long-term-plans/sync-core-simplification-roadmap.md); [`docs/wiki/3.01-API.md`](../wiki/3.01-API.md); community MCP servers [organicmoron/SP-MCP](https://github.com/organicmoron/SP-MCP) and [b0x42/Super-Productivity-MCP](https://github.com/b0x42/Super-Productivity-MCP).
 
@@ -50,16 +50,19 @@ Taken from the manifesto and applied to this feature:
               └─────────────────────┘
 ```
 
-The Work API runs in two hosts with the same code:
+The Work API runs in two hosts with the same code, plus a relay that holds nothing:
 
-| Host                | Where                                    | Reaches                          | Ships in |
-| ------------------- | ---------------------------------------- | -------------------------------- | -------- |
-| **Desktop app**     | Electron main + renderer, localhost only | Assistants on the same machine   | Phase 1  |
-| **Headless device** | Node process, self-hosted or hosted      | Cloud assistants, phone via sync | Phase 4  |
+| Host                | Where                                    | Reaches                              | Ships in |
+| ------------------- | ---------------------------------------- | ------------------------------------ | -------- |
+| **Desktop app**     | Electron main + renderer, localhost only | Assistants on the same machine       | Phase 1  |
+| **Headless device** | Node process, self-hosted or hosted      | Cloud assistants, phone via sync     | Phase 5  |
+| **Hosted relay**    | Hosted service, holds no key             | Either host above, from the internet | Phase 5  |
 
 The headless device is a full sync client: it downloads ops, replays them into state with the same reducers, and writes ops with its own client id. To the rest of the system it is simply another device. This is what keeps end-to-end encryption, conflict detection, and attribution intact without any server change.
 
-Feasibility check (2026-09): the 35 reducers under `src/app` and the task-shared meta-reducers import nothing from Angular (only `meta-reducer-registry.ts` does). `@sp/sync-core` already exposes `ActionDispatchPort` and a framework-agnostic replay coordinator, and `@sp/sync-providers` contains the SuperSync HTTP client with a fetch factory. The headless device is therefore a packaging and extraction task, not a rewrite.
+The MCP server itself lives in `packages/sp-mcp` and nowhere else (decision 1). It is built on the official MCP SDK, which stays a dependency of that package, and has two transports: stdio, spawned by a desktop client and talking to the app's local REST endpoint, and streamable HTTP, used inside the headless device. The app contains no protocol code; it exposes the Work API over REST.
+
+Feasibility check (2026-09): the 35 reducers under `src/app` and the task-shared meta-reducers import nothing from Angular (only `meta-reducer-registry.ts` does). `@sp/sync-core` already exposes `ActionDispatchPort` and a framework-agnostic replay coordinator, and `@sp/sync-providers` contains the SuperSync HTTP client with a fetch factory. The headless device is therefore a packaging and extraction task, not a rewrite. Per decision 2 the extraction happens first, as its own phase.
 
 ## 4. User experience
 
@@ -70,7 +73,7 @@ This is the part that decides adoption. It is designed first; the architecture s
 One new settings section, **AI assistants**, replacing the current "Enable local REST API" toggle and token field (which stay available under Advanced for scripts).
 
 1. User clicks **Connect an assistant** and picks a client: Claude Desktop, Claude Code, Cursor, or "Other (MCP)".
-2. The app does the client-specific setup itself where the client allows it: writes the MCP entry into the client's config, or hands the client a one-click install bundle or deep link. For "Other", it shows one URL and one copy button.
+2. The app does the client-specific setup itself where the client allows it. For Claude Desktop it installs the `.mcpb` bundle from `packages/sp-mcp`, which carries its own Node runtime, so nothing needs to be installed. For Claude Code and Cursor it writes the stdio entry into the client's config. For "Other", it shows one command and one copy button.
 3. A card appears: **Claude Desktop — Read only · Today and scheduled**. Status turns green when the client first connects.
 4. On the card, an **Access** selector with three presets (see §6) and a link to **Fine-tune** for the few people who want it.
 
@@ -78,15 +81,14 @@ No port, no token, no JSON is shown on the default path. The credential is minte
 
 Rejected alternative: keep a token field and document the config snippet. That is what exists today and it is why the community servers ship shell scripts.
 
-### 4.2 Always-on access
+### 4.2 Remote and always-on access
 
-For assistants that do not run on the user's machine (cloud agents, phone workflows):
+For assistants that do not run on the user's machine (cloud agents, phone workflows), the settings section offers **Remote access** with two levels. Both are described in full in §6.3.
 
-- **SuperSync users:** the same settings section offers **Always-on access**. Self-hosters add one container to their existing compose file. Hosted SuperSync can offer it as a paid option that runs the identical container. Pairing uses a short code shown in the app, never a copied token.
-- **WebDAV / file sync users:** the device supports those providers as well, since it uses the same provider package. Setup is a container plus the same pairing code.
-- **No sync:** always-on access is unavailable and the UI says so, with the desktop path still working.
+- **Reachable while my computer is on.** One toggle. The hosted relay makes the running desktop app reachable from the internet without a container, port forwarding or key handover. The card shows a live reachability status.
+- **Always on.** For users whose devices are not always on. Self-hosters add one container next to SuperSync (or next to their WebDAV setup, since the device uses the same provider package). Hosted SuperSync offers the same container as a separate paid opt-in that holds the user's key, with a **Lock** button and plain copy about what that means.
 
-The device shows up in the app's device list like a phone would, with a **Forget** button that revokes it.
+Pairing always uses a short code shown in the app, never a copied token. Every remote endpoint appears in the app's device list like a phone would, with a **Forget** button that revokes it. Without any sync configured, always-on access is unavailable and the UI says so; the relay still works for the running desktop app.
 
 ### 4.3 What the assistant experiences
 
@@ -114,8 +116,8 @@ Each phase ships on its own and is useful without the next. Order is chosen so t
 
 ### Phase 1 — Local MCP over the desktop app
 
-- The Electron local API server (`127.0.0.1:3876` today) additionally serves MCP over streamable HTTP at `/mcp`, generated from the contract. The protocol surface needed is small (`initialize`, `tools/list`, `tools/call`, `ping`) and is implemented in-repo, so no root dependency is added.
-- `packages/sp-mcp/`: a tiny published stdio shim (`npx @super-productivity/mcp`) for clients that only speak stdio. It forwards to the local endpoint. Its own `package.json` may depend on the official MCP SDK; that dependency stays inside the package.
+- The Electron local API server (`127.0.0.1:3876` today) grows from nine routes to the full Work API, generated from the contract. It stays REST; no MCP protocol code enters the app.
+- `packages/sp-mcp/`: the MCP server, built on the official SDK (a dependency of that package only). Published as `npx @super-productivity/mcp` (stdio, forwards to the local REST endpoint) and as an `.mcpb` bundle for Claude Desktop. The same package later provides the streamable HTTP transport inside the headless device.
 - Settings section from §4.1 with client-specific setup for Claude Desktop, Claude Code and Cursor. Credentials are per connection, stored in the same `0600` file scheme the REST token uses today.
 - Wiki: `3.01-API.md` (new surface), `3.02-Settings-and-Preferences.md` (new section), a How-To for connecting an assistant.
 - Exit: a non-technical user connects Claude Desktop in under a minute with no manual config; both community server authors have been contacted with the design and a migration path.
@@ -135,19 +137,31 @@ Each phase ships on its own and is useful without the next. Order is chosen so t
 - The `automations` plugin consumes the new events. Default: automations run only on `local` origin. Remote is opt-in per rule, with an idempotency key, because a rule evaluated on two synced devices would otherwise fire twice.
 - No streaming transport yet. The headless device adds it in Phase 4.
 
-### Phase 4 — Headless device
+### Phase 4 — Work model extraction
 
-- `packages/headless-client/`: Node process composed from `@sp/sync-core` (replay coordinator, conflict resolution, encryption), `@sp/sync-providers` (SuperSync, WebDAV, file), the reducers, the Work API, and the MCP and REST adapters. Ships as a container next to `super-sync-server`.
-- Reducer access: first via a dedicated build entry that bundles the existing reducer files from `src/app` for Node (low-risk, no file moves), then a physical move into a package once the bundle is stable. This aligns with the sync simplification roadmap's boundary work and should be sequenced with it.
-- Pairing: the app mints a device credential and shows a short code; the container is started with it. The device registers with the sync backend as a normal client with its own client id.
+- Move the reducers, meta-reducers, entity models and the pure utils they depend on from `src/app` into `packages/work-model`. The app imports them back from the package; behaviour does not change.
+- Gate: a fixture replay test that feeds a real op log through the package and asserts state equality with the app's own replay. Written before the move, kept forever.
+- Sequencing: coordinated with the sync simplification roadmap so the two efforts do not touch the same boundary at once. Local MCP, policy and events (Phases 1–3) do not depend on this phase and proceed in parallel.
+- Exit: `packages/work-model` builds for Node with no Angular or browser globals; the fixture replay passes; the grandfathered list in `eslint.config.js` has not grown.
+
+### Phase 5 — Headless device and hosted relay
+
+- `packages/headless-client/`: Node process composed from `@sp/sync-core` (replay coordinator, conflict resolution, encryption), `@sp/sync-providers` (SuperSync, WebDAV, file), `@sp/work-model`, the Work API, and `@sp/sp-mcp` in HTTP mode. Ships as a container next to `super-sync-server`.
+- Hosted relay (§6.3, tier 1): a small separate service that routes TLS by server name to the user's paired device or running desktop app. Holds no key, sees no plaintext, and is not part of the sync server process.
+- Pairing: the app mints a device credential and shows a short code; the container, or the relay entry for the desktop app, is set up with it. The device registers with the sync backend as a normal client with its own client id.
 - Logical day: the device must use the user's day boundary. The day-start offset (`startOfNextDayTime`) is synced global config and is read from state. The timezone is not synced, so pairing captures it from the app once and stores it with the device credential. The device never uses the container's clock settings.
 - Streaming events over the MCP session and a webhook option, for `WHEN task.completed …` style consumers running elsewhere.
-- Exit: a self-hoster runs one extra container and a cloud assistant can plan their day; a hosted variant is offered only if self-hosters ask for it.
+- Exit: a hosted-SuperSync user flips one toggle and a cloud assistant reaches their running desktop app; a self-hoster runs one extra container and gets always-on access.
 
-### Phase 5 — Higher-level operations and propose mode
+### Phase 6 — Hosted device
+
+- The same container as Phase 5, run by the SuperSync operator as a separate opt-in product (§6.3, tier 2). Key held in process memory, sealed at rest outside the database, lockable from the app, auto-locked after inactivity.
+- Exit: the lock and auto-lock paths are covered by tests; the product copy has been reviewed for accuracy against §6.3.
+
+### Phase 7 — Higher-level operations and propose mode
 
 - Read-side: `get_planning_context`, `find_stale_tasks`, `summarize_project`.
-- Propose mode without new entities: an assistant with the **Assist** preset writes new tasks into a designated inbox project tagged `AI proposed`; the user triages in the app they already use. A dedicated proposal store is added only if this proves too coarse.
+- Propose mode without new entities (decision 3): an assistant with the **Assist** preset writes new tasks into the Inbox project tagged `AI proposed`; the user triages in the app they already use. The target project can be changed in the fine-tune panel. A dedicated proposal store is added only if this proves too coarse.
 - `propose_day_plan` returns a plan; it does not schedule. Accepting is a batch command by the user.
 
 ### Explicit non-goals
@@ -181,30 +195,49 @@ Fine-tune, behind a link, exposes the underlying dimensions:
 
 **Network posture.** Desktop binds `127.0.0.1` only. The headless device binds localhost by default; anything else requires TLS and the paired credential, behind the user's own reverse proxy in the self-hosted case. Neither makes outbound calls other than sync.
 
-**Hosted variant honesty.** With end-to-end encryption on, a hosted device must hold the user's key to function. That is no longer server-blind. The offering is described as "a device we run for you", the self-hosted path stays first-class, and the policy engine is identical, so the hosted tier has no more access than the self-hosted one.
+### 6.3 Remote access design
+
+SuperSync encryption is mandatory (`isEncryptionMandatory = true` in the provider), so every SuperSync user holds a key and a hosted device can never be server-blind. The design therefore has three tiers, built in order, so that most users never hand over a key.
+
+**Tier 1 — hosted relay, no key.** The relay routes TLS connections by server name to the user's own endpoint, which terminates TLS itself with a certificate issued for its pairing id. The relay sees ciphertext only. It reaches both the self-hosted headless device and the running desktop app, which gives hosted-SuperSync users remote access with no container and no key handover. It is a separate service from the sync server (decision #3 stays intact) and may reuse SuperSync device identity for pairing. Limitation, shown in the UI: reachable only while one of the user's devices is on.
+
+**Tier 2 — hosted device with key.** For true always-on access. Exposure is minimised rather than hidden:
+
+- Separate service from the sync server, on its own host where possible, reaching sync only through the client API. No database access.
+- Key provisioned from the app over the paired channel and held in process memory. Sealed at rest with a per-user key from a key management service outside the database, so a database dump or disk snapshot yields nothing.
+- **Lock** in the app wipes the key from memory and the sealed copy. Auto-lock after a period without any of the user's own devices checking in (default 30 days). Unlock is one tap.
+- Envelope metadata is plaintext, so ops for entity types the policy excludes are dropped before decryption. A minimisation, not a guarantee.
+- Same policy engine, presets, audit and undo. One more device in the vector clock.
+- Product copy: this runs a readable copy of the user's data on the operator's server so assistants can reach it when the user's devices are off; the operator can technically read it; it can be locked at any time.
+
+**Tier 3 — confidential computing (revisit condition).** On a KVM host with SEV-SNP, TDX or Nitro Enclaves, the device runs in an enclave and the app verifies the code by remote attestation before releasing the key. Not possible on the current OpenVZ host; aligned with the KVM note in [`docs/supersync-encryption-at-rest-decision.md`](../supersync-encryption-at-rest-decision.md). Per-scope encryption keys, which would let a hosted device receive keys only for assistant-visible projects, need an envelope change (rule 10) and are recorded as a known gap, not planned.
+
+The wiki pages `2.08` and `2.09` still describe SuperSync encryption as optional; that is stale relative to the provider and should be corrected in a separate docs change.
 
 ## 7. Sync-correctness risks
 
 Every item below is a known failure mode and has an owner phase.
 
-| Risk                                        | Consequence                                   | Mitigation                                                                                | Phase |
-| ------------------------------------------- | --------------------------------------------- | ----------------------------------------------------------------------------------------- | ----- |
-| Automation fires on both devices for one op | duplicate side effects                        | events carry origin; automations local-only by default; idempotency key for remote opt-in | 3     |
-| Command fans out into several dispatches    | several ops per intent, replay divergence     | one command = one action, enforced by review and a spec per command                       | 0     |
-| Device day boundary differs from the user's | "today" wrong on the device, tasks misplanned | day offset from synced config; timezone captured at pairing; never container time         | 4     |
-| Vector clock growth from many devices       | pruning at `MAX_VECTOR_CLOCK_SIZE = 20`       | one headless device per user in v1; document the cap in setup                             | 4     |
-| Assistant bulk write during a sync window   | interleaved ops                               | Work API commands honour the hydration guard the effects use                              | 0     |
-| Revoked credential still holding a replay   | writes after revocation                       | policy checked per call; revocation invalidates the session immediately                   | 2     |
-| Hosted device key handling                  | server-blind claim becomes false              | explicit product copy; self-host first; key never leaves the device process               | 4     |
+| Risk                                        | Consequence                                   | Mitigation                                                                                                          | Phase |
+| ------------------------------------------- | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- | ----- |
+| Automation fires on both devices for one op | duplicate side effects                        | events carry origin; automations local-only by default; idempotency key for remote opt-in                           | 3     |
+| Command fans out into several dispatches    | several ops per intent, replay divergence     | one command = one action, enforced by review and a spec per command                                                 | 0     |
+| Device day boundary differs from the user's | "today" wrong on the device, tasks misplanned | day offset from synced config; timezone captured at pairing; never container time                                   | 5     |
+| Vector clock growth from many devices       | pruning at `MAX_VECTOR_CLOCK_SIZE = 20`       | one headless device per user in v1; document the cap in setup                                                       | 5     |
+| Assistant bulk write during a sync window   | interleaved ops                               | Work API commands honour the hydration guard the effects use                                                        | 0     |
+| Revoked credential still holding a replay   | writes after revocation                       | policy checked per call; revocation invalidates the session immediately                                             | 2     |
+| Hosted device key handling                  | operator can read that user's data            | relay first so most users never hand over a key; memory-only key, sealed at rest, lock and auto-lock; explicit copy | 6     |
+| Relay availability misunderstood            | user expects always-on, gets offline errors   | live reachability status on the card; "always on" is a separate, clearly named level                                | 5     |
+| Reducer extraction changes replay           | silent state divergence across devices        | fixture replay equality test written before the move                                                                | 4     |
 
 Per the sync rules, each phase that touches ops starts from a reproducible failure: a spec or scripted E2E that shows the risk before the mitigation lands.
 
-## 8. Open decisions
+## 8. Decisions (resolved 2026-09-16)
 
-1. **MCP protocol in-repo vs SDK in Electron.** The plan implements the small streamable-HTTP subset in-repo to honour the no-new-root-dependency rule. If the protocol surface grows (resources, prompts, sampling), revisit.
-2. **Reducer extraction timing.** Bundle-from-source first, physical move later. Needs agreement with the sync simplification roadmap so the two efforts do not cross.
-3. **Inbox project for propose mode.** A per-user designated project versus the existing Inbox. Decide on user feedback from Phase 1.
-4. **Hosted device.** Offer at all? Only with self-hoster demand and after the key-handling copy is agreed.
+1. **Where MCP lives: `packages/sp-mcp` only.** One SDK-based server with stdio and HTTP transports; the app exposes REST and contains no protocol code; Claude Desktop gets an `.mcpb` bundle. Rejected: a hand-written protocol subset in Electron (spec drift, duplicated transport work) and the SDK as a root dependency (rule exception, protocol churn in the app's release cycle).
+2. **Reducers: extract to `packages/work-model` first.** A clean boundary before the device exists, gated by a fixture replay equality test and sequenced with the sync simplification roadmap. Rejected: bundling from source first (hidden browser dependencies, a second move later) and running the real app headless (heavy image, effects need a headless mode).
+3. **Proposals: Inbox by default, tagged `AI proposed`, target project changeable in fine-tune.** Rejected: an auto-created project the user did not ask for.
+4. **Hosted: yes, in tiers.** Relay without key first, hosted device with key as a separate opt-in, confidential computing as the revisit condition (§6.3). Rejected: self-host only (leaves non-technical hosted users without remote access) and hosting for everyone without the relay tier (forces key handover on users who only need reachability).
 
 ## 9. Success criteria (no telemetry)
 
@@ -214,9 +247,12 @@ The app has no analytics, so success is observed, not measured:
 - Support issues about connecting an assistant concern client bugs, not setup steps.
 - At least one plugin (the `automations` plugin) runs on the event contract with no use of `ACTION` or `dispatchAction`.
 - A self-hoster runs the headless device from the documented compose file without a support thread.
+- A hosted-SuperSync user enables the relay and never needs to know what a key is.
 
 ## 10. First steps
 
 1. Contact the authors of the two community MCP servers with §3 and §4.3 and ask which tools their users call. Their field data replaces guesswork for the v1 tool list.
 2. Phase 0 as a series of small PRs against the plugin bridge, each moving one responsibility into `WorkApiService`, each reviewed under the size cap.
 3. A design note for the policy engine's data shape before Phase 1 ships credentials, so Phase 2 does not have to migrate them.
+4. Write the fixture replay equality test against today's `src/app` reducers, so Phase 4 starts with its safety rail already green.
+5. Correct the wiki's "optional encryption" wording for SuperSync in a separate docs change.
