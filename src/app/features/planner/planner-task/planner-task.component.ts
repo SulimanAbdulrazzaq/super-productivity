@@ -60,7 +60,7 @@ import {
 } from '../../work-context/store/work-context-meta.actions';
 import { WorkContextType } from '../../work-context/work-context.model';
 import { TODAY_TAG } from '../../tag/tag.const';
-import { ADD_TASK_INLINE_BTN_SELECTOR } from '../add-task-inline/add-task-inline.component';
+import { ADD_TASK_INLINE_BTN_SELECTOR } from '../add-task-inline/add-task-inline.const';
 import { getNextPlannerAddButton } from '../get-next-planner-add-button';
 
 @Component({

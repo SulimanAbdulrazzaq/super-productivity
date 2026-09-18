@@ -2,10 +2,8 @@ import { Component } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { NoopAnimationsModule } from '@angular/platform-browser/animations';
 import { TranslateModule } from '@ngx-translate/core';
-import {
-  ADD_TASK_INLINE_BTN_SELECTOR,
-  AddTaskInlineComponent,
-} from './add-task-inline.component';
+import { AddTaskInlineComponent } from './add-task-inline.component';
+import { ADD_TASK_INLINE_BTN_SELECTOR } from './add-task-inline.const';
 
 /**
  * Contract test for the `data-add-task-btn` marker. Keyboard focus recovery

@@ -1,4 +1,4 @@
-import { ADD_TASK_INLINE_BTN_SELECTOR } from './add-task-inline/add-task-inline.component';
+import { ADD_TASK_INLINE_BTN_SELECTOR } from './add-task-inline/add-task-inline.const';
 
 /** Resolve before removing a Planner section, such as overdue, with no add button. */
 export const getNextPlannerAddButton = (scope: HTMLElement): HTMLElement | null => {
