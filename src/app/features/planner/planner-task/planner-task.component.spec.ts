@@ -618,6 +618,9 @@ describe('PlannerTaskComponent', () => {
       const scope = document.createElement('planner-day');
       scope.setAttribute('data-planner-selection-scope', '2026-09-12');
       const add = document.createElement('button');
+      // Mirrors the real template: focus recovery targets the marked collapsed
+      // button, never a button inside the open add-task-bar.
+      add.setAttribute('data-add-task-btn', '');
       const addTask = document.createElement('add-task-inline');
       addTask.appendChild(add);
       scope.appendChild(addTask);
@@ -692,6 +695,42 @@ describe('PlannerTaskComponent', () => {
 
     expect(multiSelectMock.toggle).toHaveBeenCalledWith('t1');
     expect(taskServiceMock.toggleDoneWithAnimation).not.toHaveBeenCalled();
+  });
+
+  it('lets a modifier click on a link open it instead of selecting the card', () => {
+    const { fixture } = create(makeTask(), true);
+    const link = document.createElement('a');
+    link.href = 'https://example.com';
+    fixture.nativeElement.appendChild(link);
+    const event = new MouseEvent('click', {
+      bubbles: true,
+      cancelable: true,
+      ctrlKey: true,
+    });
+
+    // Registered before the blocker below, so it sees exactly what the
+    // component's capture-phase handler did and nothing else.
+    let wasPreventedByComponent: boolean | null = null;
+    link.addEventListener('click', () => {
+      wasPreventedByComponent = event.defaultPrevented;
+    });
+    // A real Ctrl+click on a real href would have the browser act on the
+    // navigation and take the whole Karma run with it, so block the default
+    // once the assertion above has its answer.
+    const blockNavigation = (e: Event): void => e.preventDefault();
+    window.addEventListener('click', blockNavigation);
+    try {
+      link.dispatchEvent(event);
+    } finally {
+      window.removeEventListener('click', blockNavigation);
+    }
+
+    // null would mean the click never even reached the link: the selection
+    // handler runs in the capture phase, so without its link bail-out it
+    // preventDefault's and stopPropagation's the Ctrl+click there, and the
+    // browser never opens the new tab.
+    expect(wasPreventedByComponent).toBeFalse();
+    expect(multiSelectMock.toggle).not.toHaveBeenCalled();
   });
 
   it('preserves Shift selection inside an embedded input', () => {
