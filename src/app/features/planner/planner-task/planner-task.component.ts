@@ -61,6 +61,7 @@ import {
 import { WorkContextType } from '../../work-context/work-context.model';
 import { TODAY_TAG } from '../../tag/tag.const';
 import { ADD_TASK_INLINE_BTN_SELECTOR } from '../add-task-inline/add-task-inline.component';
+import { getNextPlannerAddButton } from '../get-next-planner-add-button';
 
 @Component({
   selector: 'planner-task',
@@ -727,14 +728,14 @@ export class PlannerTaskComponent implements OnInit, OnDestroy, AfterViewInit {
     if (this._cardList) {
       return this._cardList.addButton();
     }
-    // Scoped to this row's own list only. The overdue scope has no
-    // add-task-inline, and falling back to a document-wide lookup there threw
-    // focus into the first planner day, far from where the user was working.
-    return (
-      (this._elementRef.nativeElement as HTMLElement)
-        .closest<HTMLElement>('[data-planner-selection-scope]')
-        ?.querySelector<HTMLElement>(ADD_TASK_INLINE_BTN_SELECTOR) ?? null
+    const scope = (this._elementRef.nativeElement as HTMLElement).closest<HTMLElement>(
+      '[data-planner-selection-scope]',
     );
+    // Overdue has no add button; capture the next section's before it disappears.
+    return scope
+      ? (scope.querySelector<HTMLElement>(ADD_TASK_INLINE_BTN_SELECTOR) ??
+          getNextPlannerAddButton(scope))
+      : null;
   }
 
   private _openContextMenuFromKeyboard(): void {

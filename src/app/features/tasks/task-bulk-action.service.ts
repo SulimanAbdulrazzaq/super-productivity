@@ -45,6 +45,7 @@ import { isTouchActive } from '../../util/input-intent';
 import { LocaleDatePipe } from '../../ui/pipes/locale-date.pipe';
 import { msToString } from '../../ui/duration/ms-to-string.pipe';
 import { ADD_TASK_INLINE_BTN_SELECTOR } from '../planner/add-task-inline/add-task-inline.component';
+import { getNextPlannerAddButton } from '../planner/get-next-planner-add-button';
 
 interface DateTimePick {
   date: Date | null;
@@ -774,31 +775,7 @@ export class TaskBulkActionService {
       // sibling panel is the cross-panel jump this fallback exists to avoid.
       return inScope ?? null;
     }
-    return this._addButtonOfNextPlannerSection(rowScope);
-  }
-
-  /**
-   * The Planner's overdue section has no add button of its own, and it
-   * disappears entirely once its last task leaves — so scoping focus to it
-   * yields nothing and leaves focus stranded on `<body>`, where Tab restarts
-   * from the top of the document. Hand it to the nearest section below
-   * instead, which is where the removed tasks' place in the list gives out.
-   */
-  private _addButtonOfNextPlannerSection(scope: HTMLElement): HTMLElement | null {
-    const sections = Array.from(
-      document.querySelectorAll<HTMLElement>('[data-planner-selection-scope]'),
-    );
-    const idx = sections.indexOf(scope);
-    if (idx === -1) {
-      return null;
-    }
-    for (const section of sections.slice(idx + 1)) {
-      const btn = section.querySelector<HTMLElement>(ADD_TASK_INLINE_BTN_SELECTOR);
-      if (btn) {
-        return btn;
-      }
-    }
-    return null;
+    return getNextPlannerAddButton(rowScope);
   }
 
   /**
