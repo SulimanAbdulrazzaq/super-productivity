@@ -38,9 +38,12 @@ expired snapshot with its original date. The iOS widget deliberately does not
 render that date in v1: it hides expired rows and shows the existing refresh
 prompt instead.
 
-Widget strings live under `WIDGET.IOS` in `src/assets/i18n/en.json`.
-`npm run sync:ios` regenerates `en.lproj/Localizable.strings`; never edit the
-generated native resource directly.
+Widget chrome is English-only in v1 and lives in
+`en.lproj/Localizable.strings`, edited by hand exactly like the Android
+widget's `android/app/src/main/res/values/strings.xml`. These are compiled
+native resources, not `T` / `TranslateService` keys, so they deliberately do
+not live in `src/assets/i18n/en.json` (an unreferenced section there is
+pruned by the repo's unused-translation tooling).
 
 ## Capacitor
 
@@ -62,8 +65,15 @@ The target, entitlements, and build settings are already wired in
    App ID.
 4. CI: update the `IOS_PROVISION_PROFILE` secret with the regenerated app
    profile and add the new `IOS_WIDGET_PROVISION_PROFILE` secret (base64 of
-   the widget profile) — see `.github/workflows/build-ios.yml`. Until both are
-   in place the App Store export step fails.
+   the widget profile). Both are consumed by the shared composite action
+   `.github/actions/setup-ios-signing`, used by `build-ios.yml` (App Store
+   release) and `publish-ios-testflight.yml` (label-triggered TestFlight).
+   Until both secrets are in place the export step fails with a message naming
+   the missing secret and pointing back here.
+
+Step-by-step portal instructions, and which steps are shared with the share
+extension's setup, live in
+[`docs/plans/2026-08-06-pr-8950-finalization-checklist.md`](../../../docs/plans/2026-08-06-pr-8950-finalization-checklist.md).
 
 ## Tests
 

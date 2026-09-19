@@ -4,7 +4,7 @@
 >
 > **Implementation branch:** `claude/mobile-platform-improvements-jhp6x2`
 >
-> **Last verified:** 2026-08-06
+> **Last verified:** 2026-09-19
 >
 > Delete this plan after the implementation merges and its durable contract and
 > limitations have moved to a maintained widget guide.
@@ -58,10 +58,16 @@ redesign.
   `group.com.super-productivity.app`.
 - Apple developer portal: register the extension App ID, enable the App Group on
   both App IDs, regenerate both provisioning profiles.
-- CI (`.github/workflows/build-ios.yml`): signing uses a single manually-managed
-  profile secret (`IOS_PROVISION_PROFILE`). Needs a second secret for the extension
-  profile, installed the same way, plus the extra entry in export options. The
-  existing "Apple Distribution" cert covers both targets.
+- CI: signing lives in the shared composite action
+  `.github/actions/setup-ios-signing`, which already installs the app profile
+  (`IOS_PROVISION_PROFILE`) and the optional ShareExtension profile
+  (`IOS_SHARE_PROVISION_PROFILE`). The widget adds a third optional input
+  (`ios_widget_provision_profile` / `IOS_WIDGET_PROVISION_PROFILE`) installed the
+  same way, plus a conditional `com.super-productivity.app.widget` entry in the
+  export options of both `build-ios.yml` (App Store release) and
+  `publish-ios-testflight.yml` (label-triggered TestFlight). The latter also
+  allowlists `SupWidget.appex` in its archive validation, which rejected it
+  before. The existing "Apple Distribution" cert covers all targets.
 - PR CI (`.github/workflows/ios-pr.yml`) builds the app/extension without signing
   and runs the shared `SupWidgetTests` scheme on a simulator.
 - Target-scoped required-reason privacy manifests cover App Group `UserDefaults`
@@ -149,8 +155,11 @@ No `getWidgetTaskQueue` equivalent — share-intent handling is out of scope.
   suspended requires the same phase-2 background refresh, because the extension
   does not own the task store.
 - **iOS 17+ only** (app itself stays iOS 16).
-- Widget chrome uses native localization keys generated from the canonical
-  `WIDGET.IOS` section in `en.json`.
+- Widget chrome is English-only and hand-maintained in
+  `ios/App/SupWidget/en.lproj/Localizable.strings`, mirroring how the Android
+  widget keeps `res/values/strings.xml`. Native resources deliberately stay out
+  of `src/assets/i18n/en.json`: an i18n section nothing under `src/` references
+  is pruned by the repo's unused-translation tooling.
 - No task creation / undo / per-task deep link from the widget.
 
 ## Resolved decisions
@@ -178,6 +187,12 @@ Angular: `features/widget/widget-data.model.ts`, `features/widget/widget-data.se
 `features/widget/store/widget.effects.ts` (+spec), `features/widget/widget-bridge.ts`
 (Capacitor `registerPlugin`), `root-store/feature-stores.module.ts`.
 
-CI/release: `.github/workflows/build-ios.yml` (extension profile),
-`.github/workflows/ios-pr.yml` (unsigned PR build + widget tests), new
-`IOS_WIDGET_PROVISION_PROFILE` secret, export options.
+CI/release: `.github/actions/setup-ios-signing` (new optional widget-profile
+input), `.github/workflows/build-ios.yml` and
+`.github/workflows/publish-ios-testflight.yml` (export options + `.appex`
+validation), `.github/workflows/ios-pr.yml` (unsigned PR build + widget tests),
+new `IOS_WIDGET_PROVISION_PROFILE` secret.
+
+Remaining Apple-side work and its overlap with the share-extension TestFlight
+plan is tracked in
+[`2026-08-06-pr-8950-finalization-checklist.md`](2026-08-06-pr-8950-finalization-checklist.md).

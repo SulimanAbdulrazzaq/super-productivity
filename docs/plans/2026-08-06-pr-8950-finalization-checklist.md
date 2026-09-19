@@ -1,147 +1,94 @@
 # PR #8950 — iOS Widget Finalization Checklist
 
-Last updated: 2026-08-06
+**Created:** 2026-08-06 · **Last updated:** 2026-09-19
 
 PR: <https://github.com/super-productivity/super-productivity/pull/8950>
 
-This document is the operational handoff for the remaining signing and merge
-work; it does not replace the widget implementation documentation.
+Operational handoff for the remaining Apple-side signing work. It does not
+replace the implementation documentation
+([`ios/App/SupWidget/README.md`](../../ios/App/SupWidget/README.md),
+[`2026-07-07-ios-home-screen-widget-port.md`](2026-07-07-ios-home-screen-widget-port.md)).
 
-## Current status
+## Status (2026-09-19)
 
-- [x] PR branch rebased onto current `master`.
-- [x] Rebased head pushed to the PR branch: `91c3def999a8943c7f5ef6f19550d04cd2eae313`.
-- [x] `dayStr` / `validUntil` widget-data conflict resolved across TypeScript,
-      Kotlin, and Swift.
-- [x] Cross-platform writer/reader fixture aligned.
-- [x] Full JavaScript/TypeScript suite, production frontend build, required
-      per-file checks, and Android widget contract test passed locally.
-- [ ] All GitHub PR checks complete successfully.
-- [ ] Apple App Group and widget App ID configured.
-- [ ] Main-app and widget provisioning profiles installed as GitHub secrets.
-- [ ] Signed iOS workflow exports and uploads the app successfully.
-- [ ] Required review approval received and PR merged.
+Code and CI side:
 
-At the time this document was written, GitHub reported the PR as mergeable but
-blocked pending checks/review. CodeQL, lint, frontend build, dependency review,
-Lighthouse, package-lock validation, and documentation-link checks were green.
-The iOS widget build, Android native tests, main tests, Electron build, preview,
-and E2E jobs were still running.
+- [x] Branch rebased onto current `master`. The head SHA is deliberately not
+      pinned here — it moves with every push; read it from the PR instead.
+- [x] `SupWidgetTests/WidgetDataTests.swift` raw-string defect fixed (a
+      one-pound `#"…"#` literal closed early on `"#ff0000"`), which is what
+      made the `iOS PR` → `Build app and test widget` check red.
+- [x] Widget signing reworked onto the shared composite action
+      `.github/actions/setup-ios-signing` (new optional
+      `ios_widget_provision_profile` input), replacing the earlier inline step
+      in `build-ios.yml` that `master` has since refactored away.
+- [x] `publish-ios-testflight.yml` accepts the widget: `SupWidget.appex` is
+      allowlisted in archive validation, gets the same bundle-ID/version
+      assertions as `ShareExtension.appex`, and gets a conditional
+      `provisioningProfiles` entry. It previously rejected this PR's archive by
+      name.
+- [ ] Apple identifiers, App Group, and provisioning profiles configured
+      (below) — **the only remaining blocker on the release path**.
+- [ ] `IOS_WIDGET_PROVISION_PROFILE` secret set.
+- [ ] Signed export verified end to end (release or TestFlight run).
+- [ ] Review approval and merge.
 
-## Estimate
+Not verified from Linux: nothing here compiles Swift or runs `xcodebuild`. The
+Swift fix and the workflow logic were checked by reading and by YAML parsing
+only; the first real proof is a green `Build app and test widget` job.
 
-| Work                                           | Hands-on time | Typical elapsed time |
-| ---------------------------------------------- | ------------: | -------------------: |
-| Monitor and assess current PR CI               |       2–5 min |            10–30 min |
-| Configure Apple identifiers and App Group      |     10–15 min |            10–20 min |
-| Regenerate/create two provisioning profiles    |     10–15 min |            10–20 min |
-| Validate profiles and update GitHub secrets    |      5–10 min |             5–10 min |
-| Run and monitor signed iOS/TestFlight workflow |       3–5 min |            20–40 min |
-| Final PR review and merge                      |       2–5 min |   Reviewer-dependent |
+## Overlap with the share-extension TestFlight setup
 
-**Expected total:** about **30–50 minutes of hands-on work** and **45–90
-minutes elapsed**, excluding reviewer availability.
+[`2026-09-18-ios-share-extension-testflight-setup.md`](2026-09-18-ios-share-extension-testflight-setup.md)
+asks for most of the same Apple-side work for #10033. Do it once:
 
-If the Apple account lacks Account Holder/Admin access, the correct Apple
-Distribution certificate is unclear, or a profile must be repaired, allow
-additional coordination time—potentially one business day or more.
+| Work                                                         | Shared with #10033 |
+| ------------------------------------------------------------ | ------------------ |
+| Register App Group `group.com.super-productivity.app`        | Yes                |
+| Enable the group on App ID `com.super-productivity.app`      | Yes                |
+| Regenerate the main-app distribution profile                 | Yes                |
+| Update `IOS_PROVISION_PROFILE`                               | Yes                |
+| App ID `com.super-productivity.app.ShareExtension` + profile | #10033 only        |
+| App ID `com.super-productivity.app.widget` + profile         | **#8950 only**     |
+| `IOS_WIDGET_PROVISION_PROFILE`                               | **#8950 only**     |
 
-## 1. Wait for the ordinary PR checks
+If #10033's setup already landed, only the last two rows remain.
 
-Monitor the checks:
+## 1. Configure Apple identifiers
 
-```bash
-gh pr checks 8950 --repo super-productivity/super-productivity --watch
-```
+Requires Apple Developer **Account Holder or Admin** access. Open
+[Certificates, Identifiers & Profiles](https://developer.apple.com/account/resources/identifiers/list).
 
-Pay particular attention to:
+1. **App Group** — create or verify `group.com.super-productivity.app`
+   ([docs](https://developer.apple.com/help/account/identifiers/register-an-app-group)).
+2. **Widget App ID** — explicit App ID, description "Super Productivity
+   Widget", bundle ID `com.super-productivity.app.widget`
+   ([docs](https://developer.apple.com/help/account/identifiers/register-an-app-id)).
+3. **Assign the group** to both `com.super-productivity.app` and
+   `com.super-productivity.app.widget`: enable **App Groups** → **Configure** →
+   select the group → save
+   ([docs](https://developer.apple.com/help/account/identifiers/enable-app-capabilities/)).
 
-- `Build app and test widget`
-- `Android Native Tests (JVM + Emulator)`
-- `Tests`
-- SuperSync and WebDAV E2E jobs
+Changing capabilities invalidates the affected provisioning profiles, which is
+why the main-app profile must be regenerated below.
 
-Do not proceed to merge if any required check fails. A failed signed iOS build
-caused only by missing profiles is expected until the Apple setup below is
-complete; a compile or unit-test failure is not.
+## 2. Create the provisioning profiles
 
-## 2. Configure Apple identifiers
+Two **App Store Connect** distribution profiles, both signed with the Apple
+Distribution certificate the repo's `mac_certs` secret already holds. If
+several active certificates are offered, do not guess — check which one the
+existing main-app profile uses.
 
-This requires Apple Developer **Account Holder or Admin** access.
+- **Main app** `com.super-productivity.app`: regenerate so it carries the App
+  Group entitlement. Keep the previous file until a release build has
+  succeeded; this profile is also used by the App Store release path.
+- **Widget** `com.super-productivity.app.widget`: new profile, same group.
 
-Open [Certificates, Identifiers & Profiles](https://developer.apple.com/account/resources/identifiers/list).
+Keep both `.mobileprovision` files outside the repository. Never commit a
+profile or its base64 form.
+([docs](https://developer.apple.com/help/account/provisioning-profiles/create-an-app-store-provisioning-profile))
 
-### 2.1 Create or verify the App Group
-
-Under **Identifiers**, click **+**, choose **App Groups**, and create or verify:
-
-```text
-group.com.super-productivity.app
-```
-
-Reference: [Apple — Register an app group](https://developer.apple.com/help/account/identifiers/register-an-app-group)
-
-### 2.2 Register the widget App ID
-
-Under **Identifiers**, click **+**, choose **App IDs**, then create an explicit
-App ID:
-
-```text
-Description: Super Productivity Widget
-Bundle ID:   com.super-productivity.app.widget
-```
-
-Reference: [Apple — Register an App ID](https://developer.apple.com/help/account/identifiers/register-an-app-id)
-
-### 2.3 Assign the App Group to both App IDs
-
-Edit each identifier:
-
-```text
-com.super-productivity.app
-com.super-productivity.app.widget
-```
-
-For both identifiers:
-
-1. Enable **App Groups**.
-2. Click **Configure**.
-3. Select `group.com.super-productivity.app`.
-4. Save/confirm the change.
-
-Changing capabilities invalidates affected provisioning profiles, which is why
-the main-app profile must be regenerated in the next step.
-
-Reference: [Apple — Enable app capabilities](https://developer.apple.com/help/account/identifiers/enable-app-capabilities/)
-
-## 3. Create the provisioning profiles
-
-Under **Profiles**, prepare two **App Store Connect** distribution profiles.
-
-### Main app
-
-- App ID: `com.super-productivity.app`
-- Regenerate the existing distribution profile, or create a replacement.
-- Confirm it contains the App Group entitlement.
-
-### Widget extension
-
-- App ID: `com.super-productivity.app.widget`
-- Create a new App Store Connect distribution profile.
-- Confirm it contains the same App Group entitlement.
-
-Select the Apple Distribution certificate already represented by the
-repository's `mac_certs` secret. If multiple active certificates are offered,
-do not guess: determine which certificate the existing main-app profile/CI uses.
-
-Download both `.mobileprovision` files and keep them outside the repository.
-Never commit a provisioning profile or its Base64 representation.
-
-Reference: [Apple — Create an App Store Connect provisioning profile](https://developer.apple.com/help/account/provisioning-profiles/create-an-app-store-provisioning-profile)
-
-## 4. Validate the downloaded profiles on macOS
-
-Set paths to the downloaded files:
+## 3. Validate the downloaded profiles (macOS)
 
 ```bash
 APP_PROFILE="$HOME/Downloads/super-productivity-app.mobileprovision"
@@ -149,20 +96,13 @@ WIDGET_PROFILE="$HOME/Downloads/super-productivity-widget.mobileprovision"
 
 security cms -D -i "$APP_PROFILE" > /tmp/sp-app-profile.plist
 security cms -D -i "$WIDGET_PROFILE" > /tmp/sp-widget-profile.plist
-```
 
-Inspect bundle IDs, App Groups, profile names, and expiration dates:
-
-```bash
-/usr/libexec/PlistBuddy -c 'Print :Name' /tmp/sp-app-profile.plist
-/usr/libexec/PlistBuddy -c 'Print :ExpirationDate' /tmp/sp-app-profile.plist
-/usr/libexec/PlistBuddy -c 'Print :Entitlements:application-identifier' /tmp/sp-app-profile.plist
-/usr/libexec/PlistBuddy -c 'Print :Entitlements:com.apple.security.application-groups' /tmp/sp-app-profile.plist
-
-/usr/libexec/PlistBuddy -c 'Print :Name' /tmp/sp-widget-profile.plist
-/usr/libexec/PlistBuddy -c 'Print :ExpirationDate' /tmp/sp-widget-profile.plist
-/usr/libexec/PlistBuddy -c 'Print :Entitlements:application-identifier' /tmp/sp-widget-profile.plist
-/usr/libexec/PlistBuddy -c 'Print :Entitlements:com.apple.security.application-groups' /tmp/sp-widget-profile.plist
+for f in /tmp/sp-app-profile.plist /tmp/sp-widget-profile.plist; do
+  /usr/libexec/PlistBuddy -c 'Print :Name' "$f"
+  /usr/libexec/PlistBuddy -c 'Print :ExpirationDate' "$f"
+  /usr/libexec/PlistBuddy -c 'Print :Entitlements:application-identifier' "$f"
+  /usr/libexec/PlistBuddy -c 'Print :Entitlements:com.apple.security.application-groups' "$f"
+done
 ```
 
 Acceptance criteria:
@@ -173,89 +113,65 @@ Acceptance criteria:
 - [ ] Both profiles are unexpired.
 - [ ] Both profiles use the distribution certificate available to CI.
 
-## 5. Update GitHub Actions secrets
+The workflow re-checks the `application-identifier` of each profile and fails
+early with the expected bundle ID if it does not match.
 
-First inspect the existing secret names:
-
-```bash
-gh secret list --repo super-productivity/super-productivity | grep IOS
-```
-
-Replace the main-app profile and add/replace the widget profile:
+## 4. Update GitHub Actions secrets
 
 ```bash
-base64 < "$APP_PROFILE" | tr -d '\n' |
+openssl base64 -A -in "$APP_PROFILE" |
   gh secret set IOS_PROVISION_PROFILE --repo super-productivity/super-productivity
-
-base64 < "$WIDGET_PROFILE" | tr -d '\n' |
+openssl base64 -A -in "$WIDGET_PROFILE" |
   gh secret set IOS_WIDGET_PROVISION_PROFILE --repo super-productivity/super-productivity
+
+gh secret list --repo super-productivity/super-productivity | grep PROVISION
 ```
 
-Verify that both names are present. GitHub does not reveal secret values:
+Until `IOS_WIDGET_PROVISION_PROFILE` exists, the composite action skips the
+widget step and the export-options step fails with a message naming the secret
+and pointing at `ios/App/SupWidget/README.md`. That failure is expected and is
+the only thing blocking a signed build.
 
-```bash
-gh secret list --repo super-productivity/super-productivity |
-  grep -E '^IOS_(WIDGET_)?PROVISION_PROFILE'
-```
+## 5. Prove the signed path
 
-Reference: [GitHub — Using secrets in GitHub Actions](https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/use-secrets)
+Either path exercises the same export:
 
-## 6. Run the signed iOS workflow
-
-The ordinary PR workflow tests the app/widget without signing. The release
-workflow is the proof that both profiles, entitlements, certificate, archive,
-and App Store export work together.
-
-Trigger it on the PR branch:
-
-```bash
-gh workflow run build-ios.yml \
-  --ref claude/mobile-platform-improvements-jhp6x2 \
-  --repo super-productivity/super-productivity
-```
-
-Find and watch the run:
-
-```bash
-gh run list \
-  --workflow build-ios.yml \
-  --branch claude/mobile-platform-improvements-jhp6x2 \
-  --limit 1 \
-  --repo super-productivity/super-productivity
-```
-
-Then run `gh run watch <run-id> --repo super-productivity/super-productivity`.
-
-A manual run uploads the resulting IPA to TestFlight but does **not** submit it
-for App Store review.
+- **Release path:** `gh workflow run build-ios.yml --ref claude/mobile-platform-improvements-jhp6x2 --repo super-productivity/super-productivity`.
+  A manual dispatch uploads to TestFlight but does not submit for review.
+- **TestFlight path:** apply the `ios-test-flight` label to the PR. This is the
+  first run that exercises the new `SupWidget.appex` branches in
+  `publish-ios-testflight.yml`'s `validate` job against a real archive — a
+  failure there is as likely to be the check as the PR.
 
 Acceptance criteria:
 
-- [ ] Main profile bundle-ID verification passes.
-- [ ] Widget profile bundle-ID verification passes.
-- [ ] Xcode archive succeeds.
-- [ ] IPA export succeeds with both provisioning profiles.
-- [ ] Upload to App Store Connect/TestFlight succeeds.
+- [ ] Both profile bundle-ID verifications pass.
+- [ ] Xcode archive succeeds with the embedded `SupWidget.appex`.
+- [ ] `xcodebuild -exportArchive` succeeds with all mapped profiles.
+- [ ] Upload to App Store Connect / TestFlight succeeds.
+- [ ] The widget appears and its checkbox works **on a real device** —
+      interactive widgets are unreliable in the simulator.
 
-## 7. Final PR gate
+## 6. Final PR gate
 
-Before merging:
-
-- [ ] All required PR checks are green.
-- [ ] Signed iOS/TestFlight workflow is green.
-- [ ] Required reviewer approval is present.
-- [ ] No unresolved review threads remain.
-- [ ] PR still reports as mergeable against `master`.
+- [ ] All required PR checks green, including `Build app and test widget`.
+- [ ] Signed export proven (section 5).
+- [ ] Reviewer approval; no unresolved threads.
+- [ ] Still mergeable against `master`.
 
 Merging is a separate, explicit action. Do not merge merely because CI is green.
 
 ## Common failure meanings
 
-| Failure                                     | Likely cause                                      | Action                                                                             |
-| ------------------------------------------- | ------------------------------------------------- | ---------------------------------------------------------------------------------- |
-| Cannot create/configure App Group           | Insufficient Apple role                           | Ask Account Holder/Admin                                                           |
-| Main profile lacks App Group                | Old profile survived capability change            | Regenerate and replace `IOS_PROVISION_PROFILE`                                     |
-| Widget bundle-ID verification fails         | Wrong profile selected/uploaded                   | Recreate for `com.super-productivity.app.widget`                                   |
-| Signing identity not found                  | Profile uses a different distribution certificate | Recreate with CI's existing certificate or update certificate secrets deliberately |
-| `security cms` cannot decode profile        | Wrong file or malformed Base64 secret             | Redownload, validate locally, then upload again                                    |
-| Xcode app/widget compile or unit tests fail | Code/configuration issue, not portal setup        | Stop and diagnose before merging                                                   |
+| Failure                                                             | Likely cause                                      | Action                                                                             |
+| ------------------------------------------------------------------- | ------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| Cannot create/configure App Group                                   | Insufficient Apple role                           | Ask Account Holder/Admin                                                           |
+| Main profile lacks App Group                                        | Old profile survived capability change            | Regenerate and replace `IOS_PROVISION_PROFILE`                                     |
+| `SupWidget target requires the IOS_WIDGET_PROVISION_PROFILE secret` | Secret not set yet                                | Section 4                                                                          |
+| Widget bundle-ID verification fails                                 | Wrong profile selected/uploaded                   | Recreate for `com.super-productivity.app.widget`                                   |
+| `Unsupported app extension in archive`                              | A new `.appex` is not in the validation allowlist | Map a profile for it and allowlist it deliberately; do not widen the check blindly |
+| Signing identity not found                                          | Profile uses a different distribution certificate | Recreate with CI's existing certificate or update certificate secrets deliberately |
+| `security cms` cannot decode profile                                | Wrong file or malformed base64 secret             | Redownload, validate locally, then upload again                                    |
+| Xcode app/widget compile or unit tests fail                         | Code/configuration issue, not portal setup        | Stop and diagnose before merging                                                   |
+
+Delete this document once the widget has shipped.
