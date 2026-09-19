@@ -1,4 +1,6 @@
-/* Generated from src/assets/i18n/en.json. Do not edit directly. */
+/* Widget chrome, maintained by hand like Android's res/values/strings.xml.
+   Not part of the app's `T` / TranslateService catalogue: these are compiled
+   native resources the WidgetKit extension reads, and v1 ships English only. */
 "WIDGET.IOS.DESCRIPTION" = "Shows today's tasks with quick done action";
 "WIDGET.IOS.EMPTY" = "No tasks for today";
 "WIDGET.IOS.EXPIRED" = "Open Super Productivity to refresh";
