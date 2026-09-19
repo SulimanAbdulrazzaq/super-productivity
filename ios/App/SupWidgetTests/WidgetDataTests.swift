@@ -35,7 +35,7 @@ final class WidgetDataTests: XCTestCase {
 
     func testJsonNullProjectIdDoesNotBecomeStringNull() {
         let json =
-            #"{"v":1,"tasks":[{"id":"a","title":"A","isDone":false,"projectId":null}],"projectColors":{"null":"#ff0000"}}"#
+            ##"{"v":1,"tasks":[{"id":"a","title":"A","isDone":false,"projectId":null}],"projectColors":{"null":"#ff0000"}}"##
         XCTAssertNil(WidgetData.parse(json)[0].projectColor)
     }
 
@@ -128,7 +128,7 @@ final class WidgetDataTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(WidgetLayout.taskToggleHitTarget, 28)
     }
 
-    func testGeneratedWidgetLocalizationIsBundled() {
+    func testWidgetLocalizationIsBundled() {
         let testBundle = Bundle(for: WidgetDataTests.self)
 
         XCTAssertEqual(

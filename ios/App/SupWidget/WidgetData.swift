@@ -11,6 +11,14 @@ struct WidgetSnapshot: Equatable {
     let tasks: [WidgetTask]
     let validUntil: Date?
 
+    /// Deliberate divergence from the Kotlin reader of the same `v: 1` blob:
+    /// `WidgetData.kt`'s `isSnapshotStale` treats a missing `validUntil` as
+    /// "not expired", this treats it as expired. Android can fall back to
+    /// `dayStr` in its header; the iOS widget renders no date, so a snapshot
+    /// with no known boundary would sit on the home screen forever with no
+    /// way for the user to tell it is stale. Showing the refresh prompt is the
+    /// safer default here. Unreachable in practice — `selectWidgetData` always
+    /// stamps `validUntil`.
     func isValid(at date: Date) -> Bool {
         validUntil.map { date < $0 } ?? false
     }
