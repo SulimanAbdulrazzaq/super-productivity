@@ -29,6 +29,15 @@ object ReminderNotificationHelper {
     const val GROUP_KEY = "sp_reminders_group"
     const val SUMMARY_NOTIFICATION_ID = Int.MAX_VALUE
 
+    /**
+     * Action of the full-screen launch intent attached to alarm-style reminders.
+     * Distinct from the tap content intent (which carries no action) so the two
+     * PendingIntents never collide: PendingIntent identity is (requestCode,
+     * filterEquals(intent)) and extras are NOT part of filterEquals — the same
+     * request code with equal filters would merge the two intents' extras.
+     */
+    const val ACTION_SHOW_REMINDER_FSI = "com.superproductivity.ACTION_SHOW_REMINDER_FSI"
+
     fun createChannels(context: Context) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val notificationManager = context.getSystemService(NotificationManager::class.java)
@@ -165,6 +174,30 @@ object ReminderNotificationHelper {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
+        // Full-screen launch for alarm-style reminders: a plain high-priority
+        // notification only plays its sound while the screen is off and is filed
+        // into the drawer unseen — the user discovers it only after unlocking
+        // (#10071). The full-screen intent makes Android wake the screen and
+        // present the reminder with its actions over the lock screen. Regular
+        // reminders stay plain notifications (calm default, opt-in intrusiveness).
+        // On Android 14+ the system may withhold USE_FULL_SCREEN_INTENT; the
+        // intent then degrades to a normal heads-up, i.e. the pre-fix behavior.
+        val fullScreenPendingIntent = if (useAlarmStyle) {
+            val fullScreenIntent = Intent(context, CapacitorMainActivity::class.java).apply {
+                action = ACTION_SHOW_REMINDER_FSI
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                    Intent.FLAG_ACTIVITY_CLEAR_TOP
+                putExtra("REMINDER_TASK_ID", relatedId)
+            }
+            PendingIntent.getActivity(
+                context, notificationId, fullScreenIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+        } else {
+            null
+        }
+
         // PendingIntent request codes use XOR with distinct high bits to ensure each action
         // gets a unique request code without integer overflow risk.
         // notificationId is used directly for the content intent.
@@ -219,7 +252,7 @@ object ReminderNotificationHelper {
 
         val category = if (useAlarmStyle) NotificationCompat.CATEGORY_ALARM else NotificationCompat.CATEGORY_REMINDER
 
-        val notification = NotificationCompat.Builder(context, channelId)
+        val builder = NotificationCompat.Builder(context, channelId)
             .setSmallIcon(R.drawable.ic_stat_sp)
             .setContentTitle(title)
             .setContentText(when (reminderType) {
@@ -236,7 +269,27 @@ object ReminderNotificationHelper {
             .setOngoing(isOngoing)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setCategory(category)
-            .build()
+
+        if (fullScreenPendingIntent != null) {
+            // VISIBILITY_PUBLIC keeps the Done/Snooze actions usable directly on
+            // the lock screen, where this notification now appears full-screen.
+            builder
+                .setFullScreenIntent(fullScreenPendingIntent, true)
+                .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                val nm = context.getSystemService(NotificationManager::class.java)
+                if (nm?.canUseFullScreenIntent() == false) {
+                    Log.w(
+                        TAG,
+                        "USE_FULL_SCREEN_INTENT not granted (Android 14+ grants it only to " +
+                            "calling/alarm apps by default); reminder falls back to heads-up"
+                    )
+                }
+            }
+        }
+
+        val notification = builder.build()
 
         try {
             NotificationManagerCompat.from(context).notify(notificationId, notification)

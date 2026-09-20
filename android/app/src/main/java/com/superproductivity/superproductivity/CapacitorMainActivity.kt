@@ -5,12 +5,14 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.graphics.Rect
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.webkit.WebView
 import android.widget.Toast
 import androidx.localbroadcastmanager.content.LocalBroadcastManager
@@ -23,6 +25,7 @@ import com.superproductivity.superproductivity.service.FocusModeForegroundServic
 import com.superproductivity.superproductivity.service.FocusModeNotificationHelper
 import com.superproductivity.superproductivity.service.ForegroundServiceFailure
 import com.superproductivity.superproductivity.service.RemoteTrackingNotificationHelper
+import com.superproductivity.superproductivity.service.ReminderNotificationHelper
 import com.superproductivity.superproductivity.service.SyncReminderScheduler
 import com.superproductivity.superproductivity.service.TrackingForegroundService
 import com.superproductivity.superproductivity.util.printWebViewVersion
@@ -391,6 +394,24 @@ class CapacitorMainActivity : BridgeActivity() {
         // Handle reminder notification tap
         val reminderTaskId = intent.getStringExtra("REMINDER_TASK_ID")
         if (reminderTaskId != null) {
+            // Full-screen-intent launch (alarm-style reminder fired with the screen
+            // off): let this activity turn the screen on and draw over the keyguard
+            // so the reminder is actually seen instead of buried in the drawer
+            // (#10071). Set only on the FSI path; the flags then persist for the
+            // activity's lifetime, but they only take effect while this activity is
+            // on top — which in practice it only is right after a reminder fired.
+            if (intent.action == ReminderNotificationHelper.ACTION_SHOW_REMINDER_FSI) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+                    setShowWhenLocked(true)
+                    setTurnScreenOn(true)
+                } else {
+                    @Suppress("DEPRECATION")
+                    window.addFlags(
+                        WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                            WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
+                    )
+                }
+            }
             // Sanitize to prevent JS injection (only allow alphanumeric, dash, underscore)
             val sanitizedId = reminderTaskId.replace(Regex("[^a-zA-Z0-9_-]"), "")
             Log.d("SP_REMINDER", "Reminder tap: taskId=$sanitizedId")
