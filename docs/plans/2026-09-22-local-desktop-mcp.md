@@ -9,6 +9,8 @@ Maintainer decisions (2026-09-22):
 - Build the server in-repo instead of adding the SDK.
 - One credential in v1.
 - Add `network.server` to the Mac App Store build (see §9).
+- Make the REST API enable flag device-local in a separate PR, landed first (see §10).
+- Execute all milestones. Each PR's commits stay separate on the working branch so they can be split into the PR order in §10.
 
 Companion: `2026-09-22-native-capture-plan.md` (only the shared capture command).
 
