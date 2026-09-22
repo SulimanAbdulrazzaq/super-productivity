@@ -1,202 +1,291 @@
 # Local desktop MCP for Super Productivity
 
-Implementation plan · 22 September 2026 (revised after a repository review of `2f4c660`)
+Implementation plan · 22 September 2026 · rev. 3. Checked against `2f4c660`/`6093901`, and against the MCP spec repository as of 2026-09-22.
 
-**Decision:** Add an opt-in MCP endpoint to the running desktop app, served by the existing loopback listener and backed by the same renderer query and command code as the REST API. Ship bounded, read-only access first. Add Inbox capture next. Leave editing out until real usage shows a need.
+**Decision.** Add an opt-in MCP endpoint to the running desktop app. It is served by the existing loopback listener and uses the same renderer query and command code as the REST API. The MCP handler is small and built in-repo, with no new dependency. There is one credential with explicit scopes. Bounded read access ships first, Inbox capture second. Editing waits until real usage shows a need.
 
-Companion: `2026-09-22-native-capture-plan.md` (shared capture command only).
+Maintainer decisions (2026-09-22):
 
----
+- Build the server in-repo instead of adding the SDK.
+- One credential in v1.
+- Add `network.server` to the Mac App Store build (see §9).
 
-## 0. What changed versus the first draft, and why
-
-| #   | First draft                                                                                                                | Revision                                                                                                                                                                               | Evidence                                                                                                                                                                                                                                                                               |
-| --- | -------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1   | Pin the official MCP SDK in Electron main                                                                                  | **No new root dependency.** Build a small, in-repo MCP server that only exposes tools. Adding the SDK needs an explicit maintainer exception.                                          | AGENTS.md "Dependencies" rule. `@modelcontextprotocol/sdk` is in the lockfile only as a transitive **dev** dependency of `@angular/cli`. At runtime it would bring in express, hono, cors, jose, ajv and eventsource.                                                                  |
-| 2   | Dedicated endpoint and port                                                                                                | **Reuse the listener in `electron/local-rest-api.ts` at a new path, `/mcp`.** MCP gets its own enable flag and its own credentials.                                                    | That listener already handles Host checks, body/concurrency/timeout limits, `EADDRINUSE`, and keep-alive teardown on disable (#7484). A second port means a second copy of all of that.                                                                                                |
-| 3   | stdio "only if a client needs it"                                                                                          | **Expect stdio to be needed for desktop GUI clients.** Plan a bundled stdio→HTTP shim, run with the app's own binary through `ELECTRON_RUN_AS_NODE`. M0 confirms whether it is needed. | GUI clients such as Claude Desktop have historically run local servers over stdio. Their "remote" connectors connect from the vendor's cloud and cannot reach `127.0.0.1`. The RunAsNode fuse is already on (`plugin-node-executor.ts`).                                               |
-| 4   | Settings "per installation" (storage not specified)                                                                        | **Keep enablement, grants and verifiers in main-process files under `userData`, like the REST token. Keep them out of `GlobalConfig`.**                                                | `misc.isLocalRestApiEnabled` sits in synced global config and `GLOBAL_CONFIG_LOCAL_ONLY_FIELDS` is empty. Enabling the REST API on one device therefore also turns on the listener on every synced desktop. Main-process storage also avoids any persisted-model or sync-surface cost. |
-| 5   | New "dataset generation" concept                                                                                           | **Use the sync `clientId` as the generation.**                                                                                                                                         | Clean-slate and backup import already rotate `clientId` atomically (`clean-slate.service.ts`, `operation-log.effects.ts:241`). No new persisted state.                                                                                                                                 |
-| 6   | Cursor pagination tied to generation and query revision                                                                    | **v1 has no cursors.** Filters are required, the limit is capped, and the result says `truncated: true` with a hint to narrow the filter.                                              | Assistants narrow filters readily. Cursors over live in-memory state need revision tracking that nothing else in the app uses.                                                                                                                                                         |
-| 7   | New receipt-persistence integration                                                                                        | **The durable boundary is `OperationWriteFlushService.flushPendingWrites()`.** Nothing new is persisted.                                                                               | It already guarantees that the op reached IndexedDB. Sync conflict detection depends on it.                                                                                                                                                                                            |
-| 8   | Idempotency ledger kept until the connection retires, even after the task is deleted; writes rejected when storage is full | **Not in v1.** If duplicate captures are actually observed, add a bounded in-memory TTL map (key → taskId).                                                                            | "Hardening needs an observed instance." A duplicate Inbox task is visible and harmless. The draft's ledger grows without bound, and its fail mode is "capture stops working".                                                                                                          |
-| 9   | Several named connections in v1                                                                                            | **Leaner option: one MCP credential with scope checkboxes.** Keep the storage shape ready for more connections later. Your call.                                                       | Every added connection adds settings UI. Rotating the one credential revokes everything.                                                                                                                                                                                               |
-| 10  | Not addressed                                                                                                              | **Mac App Store build cannot listen.** Exclude the feature there or add `com.apple.security.network.server`. Check Snap `network-bind`.                                                | `build/entitlements.mas.plist` only has `network.client`. Snap plugs are `default` plus a few others and do not list `network-bind`.                                                                                                                                                   |
-| 11  | Not addressed                                                                                                              | **Validate the IPC sender** on responses. Today `handleResponse(_event, …)` ignores the sender.                                                                                        | `electron/local-rest-api.ts`                                                                                                                                                                                                                                                           |
-| 12  | Not addressed                                                                                                              | **Share query code with the REST API instead of copying it.** Pull projections and filters out of `local-rest-api-handler.service.ts` into a small query service.                      | That service is 993 lines, and the service size cap is 1200. MCP code must not be added to it.                                                                                                                                                                                         |
+Companion: `2026-09-22-native-capture-plan.md` (only the shared capture command).
 
 ---
+
+## 0. Changes from the first draft
+
+"Verified" means a second, independent pass checked it.
+
+| #   | First draft                                              | This plan                                                                                                                                                     | Evidence                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| --- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | Pin the official SDK                                     | **Build a small tools-only handler in-repo that serves both spec eras** (§3).                                                                                 | The AGENTS.md dependency rule. `@modelcontextprotocol/sdk@1.30.0` is only in the lockfile as a transitive dev dependency of `@angular/cli`. At runtime it needs 17 hard dependencies (express, hono, cors, jose, ajv, …). **Neither SDK 1.30 nor 2.0 implements the current spec revision 2026-07-28 yet**, so the SDK would not save the compatibility work.                                                                                 |
+| 2   | Separate endpoint and port                               | **Put `/mcp` on the listener in `electron/local-rest-api.ts`, with its own enable flag and credential.**                                                      | That listener already has the Host allowlist, body and timeout limits, `EADDRINUSE` handling and keep-alive teardown (#7484). Verified.                                                                                                                                                                                                                                                                                                       |
+| 3   | Add stdio only if a client needs it                      | **stdio is needed for Claude Desktop. Distribute it as a `.mcpb` Desktop Extension (Node type) that Claude Desktop runs, not by re-running SP's own binary.** | Claude Desktop's config accepts only stdio entries. Custom connectors connect from Anthropic's cloud and cannot reach localhost. Re-running SP's binary with `ELECTRON_RUN_AS_NODE` breaks on Linux: `superproductivity` is a shell wrapper (`tools/afterPack.js`), and under Snap on Wayland it injects `--ozone-platform=x11`, which Node rejects. It is also fragile on AppImage, the Windows portable build, appx, Snap, Flatpak and MAS. |
+| 4   | Settings storage not specified                           | **Store settings in a 0600 file in main-process `userData`, never in `GlobalConfig`.**                                                                        | `misc.isLocalRestApiEnabled` is synced; `GLOBAL_CONFIG_LOCAL_ONLY_FIELDS` is dead code (all comments, no references). See §10.                                                                                                                                                                                                                                                                                                                |
+| 5   | "Dataset generation" (rev. 2 used `clientId` as a proxy) | **Drop it, and drop `CONNECTION_STALE` with it.**                                                                                                             | `clientId` rotates on clean slate and backup import, but **not** on remote snapshot hydration, USE_REMOTE force-download or a remote SYNC_IMPORT. It is not a sound proxy. The credential holder also doesn't change when the data does, so the check gives no security.                                                                                                                                                                      |
+| 6   | Cursor pagination                                        | **No cursors in v1.** Require filters, cap the limit, and return `truncated: true`.                                                                           | Assistants narrow queries well. Cursors over live state would need revision tracking that doesn't exist.                                                                                                                                                                                                                                                                                                                                      |
+| 7   | New receipt persistence                                  | **Use `OperationWriteFlushService.flushPendingWrites()` plus an explicit success check** (§7).                                                                | The flush also resolves when a write **failed**: the effect decrements the pending count in a `finally`, and `markUnrecoveredPersistFailure()` is the only signal (`operation-log.effects.ts:152-163`). Verified.                                                                                                                                                                                                                             |
+| 8   | Unbounded idempotency ledger                             | **Leave it out of v1.** Add a bounded in-memory TTL map only if duplicate captures are actually observed.                                                     | Rule: hardening needs an observed instance. A duplicate Inbox task is visible and harmless.                                                                                                                                                                                                                                                                                                                                                   |
+| 9   | Several named connections                                | **One credential with scope checkboxes.** Keep the file shape ready for a list later.                                                                         | Maintainer decision.                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| 10  | (missing)                                                | **Readiness is `DataInitStateService.isAllDataLoadedInitially$` plus `!isApplyingRemoteOps()`, not `getIsAppReady()` or `isInSyncWindow()`.**                 | `getIsAppReady()` turns true in the `AppComponent` constructor, before data loads, and never resets on reload. `isInSyncWindow()` stays open for the whole sync, including up to 90 s of provider I/O, so reads would fail on every sync. Verified.                                                                                                                                                                                           |
+| 11  | (missing)                                                | **Reject unknown input with `typia.validateEquals`.**                                                                                                         | The REST handler silently drops unknown keys (`pickAllowedFields`), and `typia.validate` accepts extra properties.                                                                                                                                                                                                                                                                                                                            |
+| 12  | (missing)                                                | **Share read projections with REST by extracting them from `local-rest-api-handler.service.ts`.**                                                             | That file is 993 lines; `max-lines` for services is 1200 (error).                                                                                                                                                                                                                                                                                                                                                                             |
+| 13  | (missing)                                                | **Mac App Store: add `network.server`** (§9). **Snap: add the `network-bind` plug explicitly.**                                                               | A sandboxed listener fails with EPERM without the entitlement, so the REST API is almost certainly broken on MAS today (inferred from config; not observed). electron-builder's default Snap plugs do not include `network-bind`. Today, listening may only work because `browser-support` allows it, which core24 drops.                                                                                                                     |
+| 14  | rev. 2 security extras                                   | **Moved to "Known gaps"** (§8): IPC sender check, per-credential rate limit.                                                                                  | No observed attack path. Only the main window loads `preload.js`, and request IDs come from `randomUUID()`.                                                                                                                                                                                                                                                                                                                                   |
 
 ## 1. Does it earn its place?
 
-**Demand.** Two community MCP servers are listed in `community-plugins.json`: SP-MCP (≈120★) and Super-Productivity-MCP (≈81★). Only one issue exists (#4718, closed, no reactions).
+**Demand.** There are two community MCP servers in `community-plugins.json`: SP-MCP (≈120★, a plugin plus an external server process) and Super-Productivity-MCP (≈81★). There is one closed issue, #4718, with no reactions.
 
-**What users can already do.** Community servers run the full REST API through one all-access token. That token can create, update, archive, restore and control the timer. Users also have to install Node themselves.
+**What only first-party can do:**
 
-**What a first-party endpoint adds that community servers cannot:**
+- **Scoped credentials.** Today the only token grants full CRUD, archive and timer control.
+- **No Node install** for HTTP clients.
+- **Bounded, content-minimal responses.**
+- **A supported setup UI.**
 
-- scoped credentials, so a client can have read-only or capture-only access instead of full CRUD
-- no Node install
-- bounded, content-minimal responses
-- a supported setup UI
+**Alternatives considered:**
 
-If those four points are not wanted, the leaner alternative is to leave MCP to the community and only add scopes to REST tokens. **Recommendation: build it, limited to read access and capture.**
+- **Scopes on REST tokens, leave MCP to the community.** This is leaner, but users would still need Node and a third-party server.
+- **Plugin-hosted.** A plugin's Node scripts are single calls capped at 5 minutes, so it cannot own a listener.
+- **Headless engine.** Rejected: it would break renderer authority.
 
-**Alternatives rejected:**
+## 2. Scope
 
-- **An MCP plugin.** Plugin Node scripts are single calls with a timeout (maximum 5 min). They cannot host a long-lived server, and plugins cannot hold scoped credentials.
-- **A headless or second state engine.** It would break the renderer-authority invariant below.
-
-## 2. Product scope
-
-| Topic        | Decision                                                                                                                   |
-| ------------ | -------------------------------------------------------------------------------------------------------------------------- |
-| Host         | Electron desktop only (not the MAS build unless its entitlement is added)                                                  |
-| Availability | SP running, renderer alive (tray and minimized are fine, because `backgroundThrottling: false`)                            |
-| v1           | Read task summaries, a single task, projects and tags                                                                      |
-| v2           | Capture Inbox tasks through the shared capture command                                                                     |
-| Later        | Specific edits, each behind its own grant                                                                                  |
-| Network      | `127.0.0.1` only, on the existing REST listener                                                                            |
-| Privacy      | No SP-operated service involved. Setup states once that a cloud-hosted assistant sends tool results to its model provider. |
+| Topic        | Decision                                                                                                                         |
+| ------------ | -------------------------------------------------------------------------------------------------------------------------------- |
+| Host         | Electron desktop: DMG, MAS, Windows, Linux                                                                                       |
+| Availability | SP must be running with data loaded. Tray or minimized is fine: `backgroundThrottling: false`, and close-to-tray only `hide()`s. |
+| v1           | Read task summaries, a single task, projects and tags                                                                            |
+| v2           | Capture into the Inbox via the shared capture command                                                                            |
+| Network      | `127.0.0.1` only, bound explicitly (not `localhost`)                                                                             |
+| Privacy      | No SP-operated service. Setup tells the user once that a cloud assistant sends tool results to its model provider.               |
 
 ## 3. Architecture
 
 ```
-MCP client ──HTTP /mcp──┐
-                         ├─ electron/local-rest-api.ts listener (Host/Origin/limits)
-stdio shim ──HTTP /mcp──┘        │
-                          electron/mcp/ (JSON-RPC, auth, scope check)
-                                 │ typed IPC (sender-validated)
-                          renderer: AssistantQueryService / capture command
-                                 │
-                          NgRx store → op-log → IndexedDB → sync (unchanged)
+HTTP clients (Claude Code, Codex, Cursor, VS Code) ─┐
+Claude Desktop → SP .mcpb (Node shim, stdio→HTTP) ──┴─ POST 127.0.0.1:3876/mcp
+                         electron/local-rest-api.ts listener (Host/Origin/limits)
+                         electron/mcp/ (protocol, credential, scopes)
+                               │ typed IPC: closed union {tool, args}
+                         renderer AssistantQueryService / capture command
+                               │
+                         NgRx → op-log → IndexedDB → sync (unchanged)
 ```
 
-- **The renderer stays the authority.** No reducers in Node, no second DB, and no action names or reducer payloads cross IPC. The bridge carries a closed union of `{tool, validatedArgs}` only.
-- **`electron/mcp/`** (new): protocol handling, credential verification, scope enforcement, and the stdio shim entry point.
-- **`src/app/core/assistant-access/`** (new): read projections and filters, pulled out of the REST handler so REST and MCP share them. Readiness uses `getIsAppReady()` plus `HydrationStateService.isInSyncWindow()`.
-- **`electron/shared-with-frontend/mcp.model.ts`**: IPC request, response and error-code types.
+The renderer remains the authority. The design adds no reducers in Node and no second database. Action names and reducer payloads never cross IPC.
 
-### Minimal protocol implementation (instead of the SDK)
+### Protocol handler (dual-era, tools-only, stateless)
 
-The server is tools-only and stateless, using Streamable HTTP with JSON responses:
+Spec revision **2026-07-28** is current, and it broke compatibility: `initialize`, `ping`, sessions and the GET stream are gone. It adds a required `server/discover` method, per-request `_meta` protocol version, required `Mcp-Method` and `Mcp-Name` headers, and `resultType`. Official SDKs and most clients still speak **2025-11-25**, and the spec allows serving both eras on one endpoint.
 
-- **`POST /mcp`** handles JSON-RPC:
-  - `initialize`: negotiate `protocolVersion` against the pinned supported list. If the client's requested version is supported, echo it. Otherwise return the newest supported version.
-  - `notifications/initialized` and other notifications: `202`.
-  - `ping`.
-  - `tools/list`: only tools the credential is granted.
-  - `tools/call`: returns `structuredContent` plus a text fallback.
-- **`GET` and `DELETE /mcp`**: `405`, because there is no SSE stream and no session.
-- **Batches**: reject JSON-RPC batch arrays, unless a pinned protocol version requires them.
-- **`MCP-Protocol-Version` header**: validate it on requests after `initialize`.
+**Legacy era (2025-11-25):**
 
-This is roughly a few hundred lines. It is tested with unit tests (`electron/mcp/*.test.cjs`), MCP Inspector, and the M0 reference clients. Record the supported protocol versions in code and in the client matrix.
+- `initialize`: echo a supported version, otherwise return the latest.
+- `notifications/*`: respond `202`.
+- `ping`, `tools/list`, `tools/call`.
+- Validate `MCP-Protocol-Version` on later requests.
+- Batches: reject them (batching was removed in 2025-06-18).
 
-**If the maintainer grants a dependency exception,** swap in the SDK behind the same module boundary. Nothing else changes.
+**2026-07-28 era:**
 
-### stdio shim
+- `server/discover`, `tools/list` (with `ttlMs` and `cacheScope`), `tools/call`.
+- Validate the `Mcp-Method` and `Mcp-Name` headers against the body (400, `-32020`).
+- An unsupported version returns 400 (`-32022`); an unknown method returns 404 (`-32601`).
 
-`electron/mcp/stdio-shim.ts` is bundled with the app and started by the client with the SP binary and `ELECTRON_RUN_AS_NODE=1`. It reads newline-delimited JSON-RPC from stdin, POSTs each message to `http://127.0.0.1:<port>/mcp` with the bearer token taken from an env var, and writes the responses to stdout.
+**Both eras:**
 
-- It holds no state and runs no daemon.
-- If SP is not running, it returns a JSON-RPC error saying "Super Productivity is not running".
-- The setup UI generates the exact config snippet for each platform, including binary paths with spaces and the macOS `.app/Contents/MacOS` path.
+- `GET` and `DELETE` on `/mcp` return `405`.
+- Any Origin header, including `null`, returns `403`.
+- Results carry `structuredContent` plus a text fallback.
 
-## 4. Local settings, credentials, permissions
+**M0 decides whether the 2026 branch ships in v1**, based on what the target clients actually send. Keep version handling in one module so the older era can be dropped later.
 
-- **Storage.** Use a 0600 file in `userData`, and reuse the token-file helpers in `local-rest-api.ts`: mode verification, atomic rename, dir fsync, fail closed. The file holds `{enabled, connections: [{id, name, verifierHash, scopes[], clientIdAtCreation, createdAt}]}`. **Never in GlobalConfig.** It is not synced and not exported.
-- **Credential.** 32+ random bytes, shown once. Store a SHA-256 verifier and compare in constant time. Rotating replaces the verifier. The credential goes only in the client's header or env config, never in URLs or argv.
-- **Scopes** (all unchecked by default; the persisted set is explicit, and there is no wildcard):
+### Claude Desktop extension (`.mcpb`)
 
-| Scope              | Allows                                                                                                        |
-| ------------------ | ------------------------------------------------------------------------------------------------------------- |
-| `tasks:read`       | Title, isDone, dueDay/dueWithTime, deadline, projectId, tagIds, time estimate/spent; project and tag id+title |
-| `tasks:read_notes` | Notes via `get_task` (requires `tasks:read`)                                                                  |
-| `tasks:capture`    | `create_task` only. Returns the new id only. Never reveals existing data.                                     |
+A roughly 100-line Node script, packaged as a Desktop Extension of type `node`. Claude Desktop provides the Node runtime (verify in M0).
 
-- **Revocation.** Persist first, then update the in-memory set, then close open sockets (`closeAllConnections`, as on disable). Scopes are checked again after the body is read and again immediately before dispatch, following the existing "re-check after body" pattern.
-- **Generation binding.** Store `clientId` at creation. If the current `clientId` differs (clean slate or backup import), return `CONNECTION_STALE` and have the user re-confirm in settings.
-- **Setup UI** (Settings → Misc, next to the REST API): enable toggle, scope checkboxes, credential reveal/rotate, a copy-config snippet for each supported client, "Test connection", and status (listening, port conflict, storage failure, renderer not ready). Follow the TRANSLATING rules for strings, and add user docs per `docs/documentation-guide.md`.
+- **Settings:** `user_config` holds `token` (`sensitive: true`) and `port`. The token is passed as `env`.
+- **Behaviour:** it forwards each stdio JSON-RPC message to `/mcp` and relays the response.
+- **When SP is not running:** it returns "Super Productivity is not running".
+- **Distribution:** attached to GitHub releases and offered for download from the settings page. SP does **not** write into other apps' config files, which also satisfies MAS guideline 2.5.2.
 
-## 5. Tool catalogue (v1 + v2)
+Fall back to running SP's own binary as the shim only if M0 shows `.mcpb` is not viable. That path would need per-package launch commands and would not work under Snap on Wayland.
 
-| Tool                          | Input → result                                                                                        | Scope                         |
-| ----------------------------- | ----------------------------------------------------------------------------------------------------- | ----------------------------- |
-| `get_status`                  | → `{ready, apiVersion, grantedScopes}`. No task data, no counts.                                      | any                           |
-| `list_tasks`                  | `{query?, projectId?, tagId?, includeDone?=false, limit?≤100 (default 50)}` → summaries + `truncated` | `tasks:read`                  |
-| `get_task`                    | `{id, includeNotes?}` → one projection; notes capped (e.g. 8 KB) with `notesTruncated`                | `tasks:read` (+ `read_notes`) |
-| `list_projects` / `list_tags` | → id+title, capped                                                                                    | `tasks:read`                  |
-| `create_task` (v2)            | `{title ≤ 500 chars, notes? ≤ 8 KB}` → `{id, created: true}`                                          | `tasks:capture`               |
+### Code locations
 
-- Reads cover active tasks only: no archive, attachments, timer or bulk.
-- Total response size is capped (e.g. 256 KB).
-- Unknown input fields fail with `INVALID_INPUT` (typia, as the REST handler does).
-- A single error catalogue is used. Error text never contains task content. A client without `tasks:read` never gets an error that confirms whether an id exists.
+- `electron/mcp/`: protocol, credential and scopes.
+- `electron/shared-with-frontend/mcp.model.ts`: types shared with the renderer.
+- `src/app/core/assistant-access/`: read projections and filters, extracted from the REST handler, plus the capture command adapter.
+- `packages/mcpb-bridge/` or `tools/mcpb/`: the extension. Its build output is a release asset, not a root dependency.
 
-## 6. Read consistency and untrusted content
+## 4. Local settings, credential, scopes
 
-- Every result carries `{readAt, instanceId (non-secret), lastSyncAt?}` and makes no claim of account-wide freshness.
-- Return `APP_NOT_READY` when `!getIsAppReady()` or `isInSyncWindow()`. Never read half-hydrated state.
-- Titles and notes are data. They are returned only inside tool results, never in tool descriptions or `instructions`, and never logged (sync rule 9).
-- Prompt-injection fixtures in titles and notes must not change server behavior. The server has no content-driven actions to begin with.
+- **File.** `userData/assistant-access.json`, 0600. It reuses the token-file helpers in `local-rest-api.ts`: an exclusive random temp file, verified mode, fsync, atomic rename, a dir fsync, and failing closed. Contents: `{enabled, verifierHash, scopes[], createdAt}`. It is not synced and not in backups or exports.
+- **Credential.** 32 random bytes, shown once. Only the SHA-256 is stored, and it is compared in constant time. The credential goes in the client's header or env, never in a URL or argv.
+- **Scopes** start unchecked. The persisted set is explicit, with no wildcard.
+
+| Scope              | Allows                                                                                                  |
+| ------------------ | ------------------------------------------------------------------------------------------------------- |
+| `tasks:read`       | Title, isDone, due and deadline fields, projectId, tagIds, estimate and spent; project/tag id and title |
+| `tasks:read_notes` | Notes via `get_task`. Requires `tasks:read`.                                                            |
+| `tasks:capture`    | `create_task` only. Returns only the new id.                                                            |
+
+- **Revoke or rotate.** Persist first, then swap the in-memory state, then call `closeAllConnections()`. Scopes are re-checked after the body is read and before dispatch, following the REST re-check at `local-rest-api.ts:605`.
+- **UI** (Settings → Misc, below the REST API): enable, scopes, reveal/rotate, a copy snippet for Claude Code, Codex, Cursor and VS Code, a `.mcpb` download, "Test connection", and status. Status covers listening, port in use, **permission denied (EPERM)**, storage failure and data not loaded. Strings go through `T`, and user docs follow `docs/documentation-guide.md`.
+
+## 5. Tools
+
+| Tool                          | Input → result                                                                                | Scope                        |
+| ----------------------------- | --------------------------------------------------------------------------------------------- | ---------------------------- |
+| `get_status`                  | → `{ready, apiVersion, grantedScopes}`. No task data or counts.                               | any                          |
+| `list_tasks`                  | `{query?, projectId?, tagId?, includeDone?=false, limit? ≤100 (50)}` → summaries, `truncated` | `tasks:read`                 |
+| `get_task`                    | `{id, includeNotes?}` → projection. Notes capped at about 8 KB, with `notesTruncated`.        | `tasks:read` (+`read_notes`) |
+| `list_projects` / `list_tags` | → id and title, capped                                                                        | `tasks:read`                 |
+| `create_task` (v2)            | `{title ≤500, notes? ≤8 KB}` → `{id, status}`                                                 | `tasks:capture`              |
+
+- Only active tasks, with no archive, attachments, timer or bulk operations.
+- Response cap of about 256 KB.
+- Input is validated with `typia.validateEquals`.
+- Stable error codes. Messages never include task content or raw exception text.
+- Without `tasks:read`, an error never confirms whether an id exists.
+
+## 6. Consistency and untrusted content
+
+- Results carry `{readAt, instanceId, lastSyncAt?}` and make no claim of account-wide freshness.
+- `APP_NOT_READY` until `isAllDataLoadedInitially$`. While `isApplyingRemoteOps()` is true, briefly wait (≤2 s) and otherwise return `APP_BUSY`. Do **not** block for the whole sync window.
+- Apply the same readiness gate to REST reads in the same PR. REST currently reads before data is loaded.
+- Titles and notes are data. They never appear in tool descriptions or `instructions`, and never in logs (sync rule 9). Test fixtures should include prompt-injection text.
 
 ## 7. Capture (v2)
 
-Use the shared capture contract with native capture:
+Shared contract: the title and notes are taken literally, the task goes into the Inbox backlog, there is no view context, and task defaults apply.
 
-- Title and notes are literal.
-- The task goes to the Inbox backlog. No project, tag or Today membership comes from the current view.
-- Task defaults apply.
+1. Dispatch through the normal service path.
+2. `await flushPendingWrites()`.
+3. Return `created` only if that operation has no persist failure. That needs a small per-action success signal from `OperationLogEffects`; today only the global `markUnrecoveredPersistFailure()` exists.
+4. If the write failed, return `PERSIST_FAILED`. The task may still be visible in the UI, which is the existing optimistic-state behaviour for failed writes.
 
-The command dispatches through the normal service path, awaits `OperationWriteFlushService.flushPendingWrites()`, and only then returns `created`. "Created" means durable locally. It does not mean uploaded.
+**Timeouts.** A flush can take 30 s to drain plus 30 s for the lock, which is more than the 15 s renderer timeout. The MCP call uses its own timeout (for example 45 s). If it runs out, the result is `OUTCOME_UNKNOWN` ("may have been created, check before retrying"), never "not created".
 
-- The endpoint is up but the renderer is gone: `APP_UNAVAILABLE`.
-- SP has quit: connection refused, or the shim error.
-- No background queue is added.
-- A lost response after dispatch may already have committed. The error says "may have been created; check before retrying". Add an idempotency key only if duplicates are observed (see §0 #8).
+**Availability.** If the endpoint is up but the renderer is gone, return `APP_UNAVAILABLE`. If SP has quit, the connection is refused, or the extension returns its error. There is no background queue.
+
+The existing `AppUriTaskActionsService` "add task" path is a candidate to share the capture command with.
 
 ## 8. Security acceptance criteria
 
-- **Listener.** Bind `127.0.0.1` only. Allow Host from the existing allowlist. **Reject any Origin header for `/mcp`, including `null`.** No CORS.
-- **Auth.** Bearer is required on every `/mcp` request. Scopes are checked on list, on call, after the body is read, and before dispatch.
-- **Limits.** Reuse the body, concurrency and timeout limits. Add a per-credential rate limit and a response-byte cap.
-- **IPC.**
-  - Accept MCP responses only when `event.sender === getWin().webContents` and the sender is the main frame. Correlate by requestId.
-  - On renderer reload or crash (`render-process-gone`, `did-start-navigation`), fail pending requests.
-  - Apply the same sender check to the existing REST response handler in a separate small PR.
-- **Logs.** No credentials, titles or notes. Stable public error codes, with no raw exception messages. The REST handler currently forwards `error.message`; MCP must not.
-- **Local-only.** Nothing here syncs. Fixing the synced `isLocalRestApiEnabled` toggle is a separate follow-up, not part of this plan.
-- **Packaging.** MAS is excluded or gets the entitlement. Snap `network-bind` is verified on a real install.
+- Bind `127.0.0.1`. Allow the Host values on the existing allowlist. `/mcp` rejects **any** Origin header. No CORS.
+- A bearer credential on every `/mcp` request. Scopes are checked on list, on call, after the body is read and before dispatch.
+- Reuse the body and timeout limits. The concurrency limit only counts requests forwarded to the renderer, so set `headersTimeout`/`requestTimeout` for `/mcp` bodies (for example 10 s). Response byte cap as in §5.
+- On `render-process-gone` or a main-frame navigation, fail pending MCP requests immediately instead of waiting out the timeout.
+- Keep credentials, titles and notes out of logs. Return stable codes only. REST forwards raw `error.message` in three places, and one of them is a `JSON.parse` error that can echo body text. MCP does not do this.
+- Enablement and credentials never sync (§4, §10).
 
-## 9. Milestones
+**Known gaps** (no observed instance; revisit if one appears):
 
-| Milestone                   | Deliverable                                                                                              | Exit                                                                                                                                                                              |
-| --------------------------- | -------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **M0** client spike (≈days) | `/mcp` with `initialize`, `tools/list` and `get_status`, a hard-coded dev credential, and the stdio shim | Claude Code (HTTP), Codex (HTTP) and one GUI client (probably via the shim) connect. Protocol versions and GUI transport are recorded. Decide whether an SDK exception is needed. |
-| **M1** read seam            | `AssistantQueryService` pulled out of the REST handler, projections, limits, readiness                   | REST tests still pass. Projections have unit tests. No raw store objects are returned.                                                                                            |
-| **M2** access control       | Main-process settings file, credential, scopes, revocation, IPC sender check, settings UI                | Unauthorized, revoked and capture-only callers cannot read. Settings survive restart. Nothing appears in the op-log.                                                              |
-| **M3** read release         | Full read catalogue, docs, client matrix                                                                 | Real-client queries plus lifecycle checks (tray, reload, quit, port conflict) on macOS DMG, Windows and Linux (AppImage/deb, Snap, Flatpak)                                       |
-| **M4** capture              | `create_task` on the shared capture command plus flush                                                   | Crash before and after flush, capture-only isolation, stale clientId                                                                                                              |
-| **M5** editing              | Separate proposal                                                                                        | Only after M3/M4 usage shows a need                                                                                                                                               |
+- IPC responses aren't sender-checked.
+- There is no per-credential rate limit.
+- `getIsAppReady()` stays true across a renderer reload, which affects REST too.
 
-M1 can start in parallel with M0. M4 depends on the shared capture command from native N1, but not on its journal.
+## 9. Mac App Store: adding `com.apple.security.network.server`
 
-## 10. Verification
+**Why.** A sandboxed app cannot listen, even on loopback, without this entitlement. It also fixes the REST API toggle, which MAS users can see today but which almost certainly fails. That is inferred from config and not observed, so confirm it on a MAS build first; it is the observed instance that justifies the change.
 
-- **Unit tests.** `electron/mcp/*.test.cjs` (protocol, auth, origin, scopes, limits, sender check) and `assistant-query.service.spec.ts` (projections, filters, truncation, readiness).
-- **Manual.** Run each client from the matrix, MCP Inspector, and the stdio shim on each OS.
-- **Regression.** `local-rest-api.test.cjs` and the REST handler spec stay green after the query code moves out.
+**Problems to weigh, with mitigations:**
 
-## 11. Open questions for the maintainer
+| Risk                                                                                                                                                        | Mitigation                                                                                                                                                                                                                                      |
+| ----------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **App Review rejection** under 2.4.5(i), "entitlement without matching functionality". There is a 2026 precedent: the Iris app was rejected twice for this. | Put it in a **dedicated release**, not bundled with other risky changes. The review notes name the feature: "Local REST API / assistant access, off by default, Settings → Misc, listens on 127.0.0.1 only". Include screenshots of the toggle. |
+| **A rejection blocks every MAS update** until it is resolved                                                                                                | Ship the entitlement in its own small PR (see below). If Apple rejects it, revert only that PR and hide the REST and MCP toggles on MAS.                                                                                                        |
+| **More attack surface for all MAS users**                                                                                                                   | Nothing listens unless the user enables it. The bind is explicit to `127.0.0.1`, so the macOS firewall shows no prompt; binding to `localhost` could also take `fe80::1` and trigger one. Auth, Origin and Host checks work the same as on DMG. |
+| **The `process.mas` signal is "unreliable"** (`app.constants.ts:43`)                                                                                        | Not needed once the entitlement exists. The same code path runs everywhere.                                                                                                                                                                     |
+| **2.5.2: no writing outside the container**                                                                                                                 | SP never edits client configs. It shows copy snippets and a `.mcpb` download.                                                                                                                                                                   |
+| **2.4.5(iii): no processes that outlive the app**                                                                                                           | Nothing does. The listener dies with the app, and the `.mcpb` runs inside Claude Desktop, not as SP's process.                                                                                                                                  |
+| **The shim can't run SP's MAS binary**                                                                                                                      | Not needed. The `.mcpb` runs in Claude Desktop's Node.                                                                                                                                                                                          |
+| **A listen failure is invisible** (logged as a generic "Server error")                                                                                      | Report EPERM/EADDRINUSE to the renderer and show it in settings (§4). This applies to REST too.                                                                                                                                                 |
 
-1. Grant an SDK dependency exception, or build it in-repo (recommended)?
-2. One credential in v1 (recommended) or several named connections?
-3. MAS: exclude, or add `network.server` and accept App Review risk?
-4. Should the REST API's synced enable flag be moved to local storage in a separate PR?
+**Snap.** Add `network-bind` to the plugs in `electron-builder.yaml`. It auto-connects, so users are not prompted. Verify on core22 today; it is required before any move to core24.
+
+## 10. Separate PR: make the REST API enable flag device-local
+
+**Recommendation: yes, a small standalone PR, landed before M2.** It also creates the main-process local-settings pattern that MCP reuses.
+
+**Problem (verified).**
+
+- `misc.isLocalRestApiEnabled` syncs.
+- On other desktops, a remote op does not notify main right away, because `notifyElectronAboutCfgChange` listens to `LOCAL_ACTIONS`.
+- But on the next launch, the next local settings change or a full-state hydration, `updateLocalRestApiConfig` runs. It silently generates a token and starts listening.
+
+**Severity: low.** The listener requires a token that only exists in that machine's 0600 file, so this is unwanted exposure, not an authentication bypass. Unauthenticated `/health` does reveal that SP is running.
+
+**Shape:**
+
+1. **Storage.** Main process keeps `enabled` in a 0600 local file next to the token.
+2. **UI.** The toggle reads and writes it over IPC and is no longer part of the Formly-bound synced model.
+3. **Migration, run once when the local file doesn't exist yet.** Seed it from the current synced value. This keeps existing users' scripts working. Devices that already received `true` through sync keep it once; the migration can't tell them apart, and that is acceptable.
+4. **Legacy field.** Keep `isLocalRestApiEnabled?` in the model. It is optional and older clients still sync it (rule 11: don't remove persisted fields). New clients stop reading it after migration. No schema bump.
+5. **Tests.** An electron `*.test.cjs` for the migration and persistence, plus a spec showing that a remote config op no longer affects the listener.
+
+**Order:**
+
+1. PR A: device-local REST flag, plus reporting listener status and errors to the renderer.
+2. PR B: MAS `network.server` and Snap `network-bind`, in their own release.
+3. The MCP milestones.
+
+A and B are independent of each other.
+
+## 11. Milestones
+
+| Milestone             | Deliverable                                                                               | Exit                                                                                                                                                       |
+| --------------------- | ----------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Pre**               | PR A and PR B (§10, §9)                                                                   | Flag no longer syncs; MAS listener works (built and tested on a MAS dev build)                                                                             |
+| **M0** client spike   | `/mcp` legacy handshake, `get_status`, a dev credential, the `.mcpb` prototype            | Claude Code, Codex and Claude Desktop (`.mcpb`) connect. Record which protocol eras the clients send and whether Claude Desktop provides Node for `.mcpb`. |
+| **M1** read seam      | `AssistantQueryService` extracted from REST, projections, readiness gate for REST and MCP | REST specs still pass; projection and readiness unit tests pass                                                                                            |
+| **M2** access control | Settings file, credential, scopes, revocation, UI                                         | Unauthorized, revoked and capture-only callers can't read; settings survive restart; nothing in the op-log                                                 |
+| **M3** read release   | Full read catalogue, docs, client matrix, `.mcpb` as a release asset                      | Lifecycle checks (tray, reload, quit, port in use, EPERM) on DMG, MAS, Windows NSIS and appx, AppImage, deb, Snap, Flatpak                                 |
+| **M4** capture        | `create_task` with a per-op persist result and `OUTCOME_UNKNOWN`                          | Kill before and after the flush, quota failure, timeout, capture-only isolation                                                                            |
+| **M5** editing        | Separate proposal                                                                         | Only after M3/M4 usage shows a need                                                                                                                        |
+
+## 12. Verification
+
+- **Unit tests:**
+  - `electron/mcp/*.test.cjs`: both protocol eras, header and body mismatch, auth, Origin including `null`, scopes, limits.
+  - `assistant-query.service.spec.ts`: projections, filters, truncation, readiness.
+  - The capture persist-result spec.
+- **Manual:** each client in the matrix, MCP Inspector, and the `.mcpb` on macOS and Windows.
+- **Regression:** `local-rest-api.test.cjs` and the REST handler spec.
 
 ## Sources
 
-- MCP spec: Streamable HTTP transport, tools, lifecycle/version negotiation. Revalidate the current protocol revision in M0; the first draft cited `2026-07-28`, which this review did not verify.
-- Claude Code and Codex MCP configuration docs. Check GUI clients' current local-server support in M0.
-- Repo: `electron/local-rest-api.ts`, `src/app/core/electron/local-rest-api-handler.service.ts`, `src/app/op-log/sync/operation-write-flush.service.ts`, `src/app/op-log/apply/hydration-state.service.ts`, `src/app/imex/sync/sync.const.ts` (`GLOBAL_CONFIG_LOCAL_ONLY_FIELDS`), `build/entitlements.mas.plist`, `electron-builder.yaml`, `electron/plugin-node-executor.ts`.
+**MCP spec:**
+
+- `modelcontextprotocol/modelcontextprotocol`: `docs/specification/2026-07-28/{changelog,basic/transports/streamable-http,basic/versioning,server/discover}.mdx` and `2025-11-25/basic/transports.mdx`
+- The 2026-07-28 announcement at blog.modelcontextprotocol.io
+
+**Clients:**
+
+- Claude Desktop custom connectors: support.claude.com/en/articles/11175166
+- The `.mcpb` manifest: `modelcontextprotocol/mcpb/MANIFEST.md`
+- Claude Code MCP docs
+- Codex `codex-rs/config/src/mcp_types.rs` (`bearer_token_env_var`)
+- Cursor and VS Code configuration docs (not verified: the pages could not be fetched)
+
+**Apple:**
+
+- The `com.apple.security.network.server` entitlement docs
+- App Review Guidelines 2.4.5 and 2.5.2
+- The Iris rejection report on mjtsai.com, 2026-05-25
+
+**Snap:** snapd `interfaces/builtin/network_bind.go` and `browser_support.go`; electron-builder `targets/linux/snap/coreLegacy.ts`
+
+**Repository:**
+
+- `electron/local-rest-api.ts`, `src/app/core/electron/local-rest-api-handler.service.ts`
+- `src/app/op-log/sync/operation-write-flush.service.ts`, `src/app/op-log/capture/operation-log.effects.ts`
+- `src/app/op-log/apply/hydration-state.service.ts`, `DataInitStateService`
+- `src/app/features/config/store/global-config.effects.ts`, `src/app/imex/sync/sync.const.ts`
+- `build/entitlements.mas.plist`, `build/electron-builder.mas.yaml`, `electron-builder.yaml`
+- `tools/afterPack.js`, `build/linux/snap-wrapper.sh`, `electron/plugin-node-executor.ts`
