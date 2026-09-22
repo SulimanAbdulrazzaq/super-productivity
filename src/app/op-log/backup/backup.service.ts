@@ -50,6 +50,14 @@ export class BackupService {
   private _store = inject(Store);
   private _stateSnapshotService = inject(StateSnapshotService);
   private _opLogStore = inject(OperationLogStoreService);
+
+  /**
+   * Ring entry that must survive the pre-restore capture, set only for the
+   * duration of `restoreImportBackupById`. Held here rather than threaded
+   * through `importCompleteBackup` -> `_persistImportToOperationLog`, which
+   * already carries six positional parameters.
+   */
+  private _protectedBackupId: string | null = null;
   private _operationWriteFlushService = inject(OperationWriteFlushService);
   private _lockService = inject(LockService);
   private _conflictJournalService = inject(ConflictJournalService);
@@ -119,6 +127,18 @@ export class BackupService {
       const { isLegacyBackupData, migrateLegacyBackup } =
         await import('./migrate-legacy-backup');
       if (isLegacyBackupData(backupData as unknown as Record<string, unknown>)) {
+        // migrateLegacyBackup() dereferences the slices it migrates, so a
+        // truncated legacy payload has to be refused here rather than inside a
+        // migration step, where it would surface as an opaque TypeError.
+        if (!isDataRepairPossible(backupData)) {
+          // The migration line below never runs on this path, so without this
+          // a refused legacy file leaves no trace in the exported log that it
+          // was legacy at all, and the thrown message is identical to the
+          // modern-path refusal. Fixed string: log history is exportable.
+          OpLog.err('BackupService: legacy backup refused, core slice missing');
+          recordCriticalErrorTime();
+          throw new Error('Data validation failed and repair not possible');
+        }
         OpLog.normal(
           'BackupService: Detected legacy backup format, running migration...',
         );
@@ -267,8 +287,9 @@ export class BackupService {
 
   /**
    * On storage quota the ring (up to three full snapshots) is the likeliest
-   * culprit: keep the newest REMOTE_IMPORT / FORCE_DOWNLOAD snapshot (or the
-   * newest snapshot if neither exists) and retry once, so a full device degrades
+   * culprit: keep one snapshot — the entry being restored if this runs
+   * mid-restore, else the newest REMOTE_IMPORT / FORCE_DOWNLOAD one, else the
+   * newest — and retry once, so a full device degrades
    * to a ring of two instead of never applying another full-state op. One
    * snapshot is always kept (#10003) — a failed capture must never leave the
    * device with no recovery point. Any other error propagates untouched.
@@ -278,8 +299,13 @@ export class BackupService {
     reason: ImportBackupReason,
     taskCount: number,
   ): Promise<ImportBackupRef> {
+    const meta = {
+      reason,
+      taskCount,
+      ...(this._protectedBackupId ? { protectBackupId: this._protectedBackupId } : {}),
+    };
     try {
-      return await this._opLogStore.saveImportBackup(state, { reason, taskCount });
+      return await this._opLogStore.saveImportBackup(state, meta);
     } catch (e) {
       if ((e as Error | undefined)?.name !== 'QuotaExceededError') {
         throw e;
@@ -287,8 +313,8 @@ export class BackupService {
       OpLog.warn(
         'BackupService: Recovery point hit storage quota; pruning ring and retrying',
       );
-      await this._opLogStore.pruneImportBackups(1);
-      return this._opLogStore.saveImportBackup(state, { reason, taskCount });
+      await this._opLogStore.pruneImportBackups(1, meta.protectBackupId);
+      return this._opLogStore.saveImportBackup(state, meta);
     }
   }
 
@@ -307,12 +333,22 @@ export class BackupService {
     if (!backup) {
       return false;
     }
-    await this.importCompleteBackup(
-      backup.state as AppDataComplete,
-      true, // isSkipLegacyWarnings
-      true, // isSkipReload - loadAllData updates state live
-      true, // isForceConflict
-    );
+    // The pre-restore capture below rotates the ring, and the entry being
+    // restored is the one that rotates out when it is the oldest non-guarded
+    // one. The eviction is committed immediately, so a failure further into the
+    // import (quota on the full-state write, IDB abort, app kill) would leave
+    // the user unable to retry the only snapshot holding their data.
+    this._protectedBackupId = backupId;
+    try {
+      await this.importCompleteBackup(
+        backup.state as AppDataComplete,
+        true, // isSkipLegacyWarnings
+        true, // isSkipReload - loadAllData updates state live
+        true, // isForceConflict
+      );
+    } finally {
+      this._protectedBackupId = null;
+    }
     return true;
   }
 

@@ -56,6 +56,7 @@
     "RESTORE_FILE_BACKUP_ANDROID": "There seems to be NO DATA, but there is a backup available. Do you want to load it?",
     "RESTORE_FILE_BACKUP_MOBILE": "No data was found on this device, but a backup is available to restore (tasks: {{tasks}}, projects: {{projects}}). Restore it?",
     "RESTORE_FILE_BACKUP_MOBILE_FROM_SETTINGS": "Restore the latest automatic backup (tasks: {{tasks}}, projects: {{projects}})? This replaces all current data on this device and, if you use sync, overwrites your other devices on the next sync.",
+    "RESTORE_FILE_BACKUP_WITH_COUNTS": "There seems to be NO DATA, but there are backups available at \"{{dir}}\". Do you want to restore the latest backup from {{from}} (tasks: {{tasks}}, projects: {{projects}})?",
     "RESTORE_STRAY_BACKUP": "During the last sync, there may have been an error. Do you want to restore the last backup?"
   },
   "DATETIME_SCHEDULE": {
@@ -118,6 +119,7 @@
       "INVALID": "Share a link or text (up to 100,000 characters)."
     },
     "ANDROID": {
+      "TIME_RECOVERY_FAILED": "Could not recover the timer's recorded time. Please check the task's time before continuing.",
       "FOREGROUND_SERVICE_START_FAILED_FOCUS": "Android blocked the persistent focus mode notification. The timer continues in the app, but background alerts may be unavailable. Check notification permission and battery/background restrictions.",
       "FOREGROUND_SERVICE_START_FAILED_TRACKING": "Android blocked the persistent time tracking notification. Time is still tracked in the app, but background recovery may be unavailable. Check notification permission and battery/background restrictions.",
       "OPEN_NOTIFICATION_SETTINGS": "Open settings",
@@ -999,6 +1001,9 @@
       "D_DELETE": {
         "MSG": "Are you sure you want to delete the project \"{{title}}\"?"
       },
+      "D_RENAME": {
+        "PLACEHOLDER": "Enter project name"
+      },
       "COMPLETE": {
         "COMPLETED_ON": "Completed {{date}}",
         "REOPEN": "Reopen",
@@ -1325,10 +1330,10 @@
         "LOCAL_REMOTE": "Local -> Remote",
         "NEVER": "Never",
         "OVERWRITE_WARNING": "WARNING: The {{targetName}} data contains approximately {{targetChanges}} changes while the {{sourceName}} data only has {{sourceChanges}} changes. Are you sure you want to overwrite the {{targetName}} data with the {{sourceName}} version?",
-        "OVERWRITE_WARNING_UNKNOWN": "WARNING: This device cannot determine how many unsynced changes the {{targetName}} data has (it has no record of a previous sync). Overwriting the {{targetName}} data with the {{sourceName}} version may discard changes. Are you sure?",
+        "OVERWRITE_WARNING_UNKNOWN": "WARNING: The number of unsynced changes is unknown. This will replace the entire {{targetName}} dataset with the {{sourceName}} version. Changes present only in the {{targetName}} data will be lost. Are you sure?",
         "REMOTE": "Remote",
         "RESULT": "Result",
-        "TEXT": "<p>Update from remote. Both local and remote data seem to be modified.</p>",
+        "TEXT": "<p>Local and remote data cannot be merged automatically. Keep local replaces all remote data with this device's data. Keep remote replaces all data on this device with the remote data. Changes present only in the replaced version will be lost. Cancel leaves sync unresolved.</p>",
         "TIME": "Time",
         "TIMESTAMP": "Timestamp",
         "TITLE": "Sync: Conflicting Data",
@@ -1655,6 +1660,7 @@
         "AUTH_TOKEN_REJECTED": "Sync token was rejected by the server: {{reason}}. Please get a new token.",
         "BTN_CONFIGURE": "Configure",
         "BTN_FORCE_OVERWRITE": "Force Overwrite",
+        "BTN_RESOLVE_CONFLICT": "Resolve…",
         "CHANGE_PASSWORD_FAILED": "Failed to change password: {{message}}",
         "CLOCK_DRIFT_WARNING": "Your device clock appears to be off by {{minutes}} minutes. This may cause sync issues.",
         "COMPACTION_FAILED": "Database cleanup failed. App may slow down.",
@@ -1727,7 +1733,7 @@
         "TIMEOUT_ERROR": "Sync operation timed out. {{suggestion}}",
         "TOO_MANY_OPS_TO_DOWNLOAD": "Too many sync operations to download. Some changes may be missing.",
         "UNKNOWN_ERROR": "Unknown Sync Error: {{err}}",
-        "UNSUPPORTED_MULTI_ENTITY_CONFLICT": "Sync stopped for safety to avoid data loss. Please report this code: {{details}}",
+        "UNSUPPORTED_MULTI_ENTITY_CONFLICT": "Sync stopped because some changes cannot be merged safely. Choose Resolve… or sync manually to choose which version to keep. This replaces all data on one side. Please report this code: {{details}}",
         "UPLOAD_ERROR": "Unknown Upload Error (Settings correct?): {{err}}",
         "UPLOAD_OPS_REJECTED": "{{count}} operation(s) were permanently rejected by the server and won't be synced.",
         "VECTOR_CLOCK_LIMIT_REACHED": "Sync tidied up old device entries ({{originalSize}} → {{maxSize}}). This is normal. To clear them for good: sync all devices, then export and re-import a backup (Settings → Import/Export).",
@@ -1770,6 +1776,9 @@
       },
       "D_DELETE": {
         "CONFIRM_MSG": "Do you really want to delete the tag \"{{tagName}}\"? It will be removed from all tasks. This cannot be undone!"
+      },
+      "D_RENAME": {
+        "PLACEHOLDER": "Enter tag name"
       },
       "D_EDIT": {
         "ADD": "Add tags for \"{{title}}\"",
@@ -1844,7 +1853,6 @@
       },
       "ADDITIONAL_INFO": {
         "ADD_ATTACHMENT": "Links & Files",
-        "ADD_CHECKLIST_ITEM": "Add checklist item",
         "CHECKLIST_ACTIONS": "Checklist actions",
         "CHECK_ALL": "Check all",
         "CLEAR_COMPLETED": "Clear completed",
@@ -1873,7 +1881,8 @@
         "SUB_TASKS": "Subtasks ({{nr}})",
         "SUB_TASKS_EMPTY": "Subtasks",
         "TIME": "Duration",
-        "TITLE_PLACEHOLDER": "Enter a title"
+        "TITLE_PLACEHOLDER": "Enter a title",
+        "OPEN_IN_FULLSCREEN": "Open in fullscreen"
       },
       "B": {
         "ADD_ALL_TO_TODAY": "Add all to today",
@@ -1939,10 +1948,6 @@
       },
       "D_DEADLINE": {
         "ADD_TIME": "Add time",
-        "QA_NEXT_MONTH": "Next month",
-        "QA_NEXT_WEEK": "Next week",
-        "QA_TODAY": "Today",
-        "QA_TOMORROW": "Tomorrow",
         "REMIND_AT": "Remind at",
         "REMOVE_DEADLINE": "Remove deadline",
         "RO_1H": "1 hour before",
@@ -2023,6 +2028,73 @@
         "HELP": "Examples:<br> 30m => 30 minutes<br> 2h => 2 hours<br> 2h 30m => 2 hours and 30 minutes<br> 1.5h => 1 hour and 30 minutes<br> 03:15 => 3 hours and 15 minutes",
         "TINE_SPENT": "Time Spent",
         "TITLE": "Add for Day"
+      },
+      "MULTI_SELECT": {
+        "ACTIONS": "Actions",
+        "CLEAR": "Clear selection",
+        "D_CONFIRM_DELETE": {
+          "MSG": {
+            "ONE": "Delete <strong>{{count}}</strong> task? Its subtasks are deleted too.",
+            "OTHER": "Delete <strong>{{count}}</strong> tasks? Subtasks are deleted too."
+          },
+          "OK": "Delete"
+        },
+        "S": {
+          "DEADLINE_REMOVED": {
+            "ONE": "Removed the deadline from {{count}} task",
+            "OTHER": "Removed the deadline from {{count}} tasks"
+          },
+          "DEADLINE_SET": {
+            "ONE": "Set the deadline of {{count}} task to {{date}}",
+            "OTHER": "Set the deadline of {{count}} tasks to {{date}}"
+          },
+          "DONE": {
+            "ONE": "Marked {{count}} task as done",
+            "OTHER": "Marked {{count}} tasks as done"
+          },
+          "ESTIMATE_CLEARED": {
+            "ONE": "Cleared the estimate of {{count}} task",
+            "OTHER": "Cleared the estimate of {{count}} tasks"
+          },
+          "ESTIMATE_SET": {
+            "ONE": "Estimated {{count}} task at {{estimate}}",
+            "OTHER": "Estimated {{count}} tasks at {{estimate}}"
+          },
+          "MOVED_TO_BACKLOG": {
+            "ONE": "Moved {{count}} task to the backlog",
+            "OTHER": "Moved {{count}} tasks to the backlog",
+            "PARTIAL": "Moved {{count}} of {{total}} tasks to the backlog (subtasks follow their parent)"
+          },
+          "MOVED_TO_PROJECT": {
+            "ONE": "Moved {{count}} task to \"{{projectTitle}}\"",
+            "OTHER": "Moved {{count}} tasks to \"{{projectTitle}}\"",
+            "PARTIAL": "Moved {{count}} of {{total}} tasks to \"{{projectTitle}}\" (subtasks follow their parent)"
+          },
+          "MOVED_TO_REGULAR": {
+            "ONE": "Moved {{count}} task to the regular list",
+            "OTHER": "Moved {{count}} tasks to the regular list",
+            "PARTIAL": "Moved {{count}} of {{total}} tasks to the regular list (subtasks follow their parent)"
+          },
+          "NOTHING_TO_DO": "Nothing to change for the selected tasks",
+          "SCHEDULED": {
+            "ONE": "Scheduled {{count}} task for {{date}}",
+            "OTHER": "Scheduled {{count}} tasks for {{date}}"
+          },
+          "UNDONE": {
+            "ONE": "Marked {{count}} task as not done",
+            "OTHER": "Marked {{count}} tasks as not done"
+          },
+          "UNSCHEDULED": {
+            "ONE": "Unscheduled {{count}} task",
+            "OTHER": "Unscheduled {{count}} tasks"
+          }
+        },
+        "SELECTED_COUNT": "{{count}} selected",
+        "SELECT_ENTRY": "Select several tasks…",
+        "TASKS_TITLE": {
+          "ONE": "{{count}} task",
+          "OTHER": "{{count}} tasks"
+        }
       },
       "N": {
         "ESTIMATE_EXCEEDED": "Time estimate exceeded!",
@@ -2429,6 +2501,8 @@
     "MOVE_BACKWARD": "Move backward",
     "MOVE_FORWARD": "Move forward",
     "NEXT": "Next",
+    "NEXT_MONTH": "Next month",
+    "NEXT_WEEK": "Next week",
     "NO_CON": "You are currently offline. Please reconnect to the internet.",
     "NONE": "None",
     "OK": "Ok",
@@ -2439,12 +2513,15 @@
     "PASSWORD_STRENGTH_WEAK": "Weak",
     "PROCESSING": "Processing",
     "REMOVE": "Remove",
+    "RENAME": "Rename",
     "SAVE": "Save",
     "SHARE": "Share",
     "SUBMIT": "Submit",
     "TITLE": "Title",
+    "TODAY": "Today",
     "TODAY_TAG_TITLE": "Today",
     "TOGGLE_PASSWORD_VISIBILITY": "Toggle password visibility",
+    "TOMORROW": "Tomorrow",
     "UNDO": "Undo",
     "WITHOUT_PROJECT": "Without Project",
     "YESTERDAY": "Yesterday"
@@ -2641,6 +2718,7 @@
       "TASK_OPEN_NOTES_PANEL": "Open note/checklist in task panel",
       "TASK_OPEN_NOTES_FULLSCREEN": "Open note/checklist in fullscreen",
       "TASK_TOGGLE_DONE": "Toggle task completed status",
+      "TASK_TOGGLE_SELECT": "Toggle task in multi-selection",
       "TASK_UNSCHEDULE": "Unschedule task",
       "TITLE": "Keyboard Shortcuts",
       "TOGGLE_BACKLOG": "Show/hide project backlog",
@@ -2683,7 +2761,7 @@
       "TIME_LOCALE_AUTO": "System default",
       "TIME_LOCALE_CS_CZ": "Czech: 24-hour, DD. MM. YYYY",
       "TIME_LOCALE_DE_DE": "German: 24-hour, DD.MM.YYYY",
-      "TIME_LOCALE_DESCRIPTION": "Sets the date format and the 12/24-hour time format used across the app. \"System default\" follows your browser's language/region — to force 12- or 24-hour time, pick a specific locale. With ISO 8601, weekday labels in Schedule, Habits, and Planner follow the app language.",
+      "TIME_LOCALE_DESCRIPTION": "Sets how dates and times are displayed across the app. \"System default\" follows your browser's language/region — to force 12- or 24-hour display, pick a specific locale. Time entry fields (e.g. when scheduling a task) are drawn by your browser or OS and always follow its clock format. With ISO 8601, weekday labels in Schedule, Habits, and Planner follow the app language.",
       "TIME_LOCALE_EN_GB": "English (UK): 24-hour, DD/MM/YYYY",
       "TIME_LOCALE_EN_US": "English (US): 12-hour AM/PM, MM/DD/YYYY",
       "TIME_LOCALE_ES_ES": "Spanish: 24-hour, DD/MM/YYYY",
@@ -2709,6 +2787,7 @@
       "ZH_TW": "中文(繁體)"
     },
     "MISC": {
+      "APPEARANCE": "Appearance",
       "DARK_MODE": "Dark Mode",
       "DARK_MODE_ARIA_LABEL": "Dark mode selection",
       "DARK_MODE_DARK": "Dark",
@@ -2741,7 +2820,7 @@
       "START_OF_NEXT_DAY_HINT": "The time when your day starts (Format: HH:mm, e.g. 02:30)",
       "THEME": "Theme",
       "THEME_EXPERIMENTAL": "Theme (experimental)",
-      "THEME_INSTALL_BUTTON": "Install theme…",
+      "THEME_INSTALL_BUTTON": "Install theme",
       "THEME_INSTALL_TOOLTIP": "Upload a CSS theme file. Themes only change visuals — never run code — but they can still affect how your data is rendered. Only install themes from sources you trust.",
       "THEME_INSTALLED_WITH_WARNINGS": "Theme installed. Missing tokens: {{tokens}}",
       "THEME_INVALID_CSS_FILE": "Could not install theme: invalid or unsafe CSS file.",
@@ -2750,7 +2829,7 @@
       "THEME_SELECT_LABEL": "Select Theme",
       "TITLE": "Misc Settings",
       "WALLPAPER": "Wallpaper",
-      "WALLPAPER_BUTTON": "Set wallpaper…",
+      "WALLPAPER_BUTTON": "Set wallpaper",
       "WALLPAPER_DIALOG_TITLE": "Global wallpaper",
       "WALLPAPER_HINT": "Shown on pages without their own background (Planner, Schedule, Boards, Settings…). Tags and projects with their own image override it."
     },
@@ -2784,7 +2863,8 @@
       "LUNCH_BREAK_START_END_DESCRIPTION": "e.g. 13:00",
       "MONTH": "Month",
       "TITLE": "Schedule",
-      "WORK_START_END_DESCRIPTION": "e.g. 17:00"
+      "WORK_END_DESCRIPTION": "e.g. 17:00",
+      "WORK_START_DESCRIPTION": "e.g. 9:00"
     },
     "SHORT_SYNTAX": {
       "HELP": "<p>Here you can control short syntax options when creating a task</p>",
@@ -2877,6 +2957,7 @@
     }
   },
   "GLOBAL_SNACK": {
+    "ACTION_REJECTED": "That change hit an internal error and was not applied. Nothing was lost; if it keeps happening, please reload.",
     "COPY_TO_CLIPPBOARD": "Copied to clipboard",
     "DUPLICATE_PROJECT_ERROR": "The project could not be duplicated",
     "DUPLICATE_PROJECT_SUCCESS": "Project duplicated successfully",
@@ -3072,12 +3153,13 @@
       "CONNECT": "Connect",
       "CONNECTING": "Connecting…",
       "INTRO": "Collaborate on projects with others. Tasks assigned to you import automatically and stay in sync.",
-      "INVALID": "That token didn't work. Make sure you copied the whole token (it starts with \"pat_\") and try again.",
+      "INVALID": "Plainspace rejected that token. It may be expired or revoked — create a new one and paste it again.",
       "OPEN_LINK": "Open Plainspace",
       "TITLE": "Connect to Plainspace",
       "TOKEN_HELP": "Create an API token on Plainspace, then paste it below.",
       "TOKEN_LABEL": "API token",
-      "TOKEN_PLACEHOLDER": "pat_…"
+      "TOKEN_PLACEHOLDER": "pat_…",
+      "UNREACHABLE": "Couldn't reach Plainspace. Check your internet connection and the host, then try again."
     },
     "FORM": {
       "HOST": "Plainspace host",

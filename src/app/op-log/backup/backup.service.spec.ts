@@ -1,6 +1,7 @@
 import { TestBed } from '@angular/core/testing';
 import { Store } from '@ngrx/store';
 import { BackupService } from './backup.service';
+import { OpLog } from '../../core/log';
 import { ImexViewService } from '../../imex/imex-meta/imex-view.service';
 import { StateSnapshotService } from './state-snapshot.service';
 import { OperationLogStoreService } from '../persistence/operation-log-store.service';
@@ -110,6 +111,7 @@ describe('BackupService', () => {
       'saveImportBackup',
       'pruneImportBackups',
       'loadImportBackup',
+      'loadImportBackupById',
       'clearImportBackup',
       'runDestructiveStateReplacement',
     ]);
@@ -150,6 +152,48 @@ describe('BackupService', () => {
     });
 
     service = TestBed.inject(BackupService);
+  });
+
+  it('should refuse a truncated legacy backup with the repair-not-possible message', async () => {
+    const truncated = createMinimalValidBackup() as any;
+    delete truncated.task;
+    delete truncated.project;
+    truncated.taskArchive = { ids: [], entities: {} };
+
+    await expectAsync(
+      service.importCompleteBackup(truncated, true, true),
+    ).toBeRejectedWithError('Data validation failed and repair not possible');
+
+    expect(mockOpLogStore.runDestructiveStateReplacement).not.toHaveBeenCalled();
+    expect(mockStore.dispatch).not.toHaveBeenCalled();
+  });
+
+  it('should refuse a legacy backup missing only the task slice', async () => {
+    const truncated = createMinimalValidBackup() as any;
+    delete truncated.task;
+    truncated.taskArchive = { ids: [], entities: {} };
+
+    await expectAsync(
+      service.importCompleteBackup(truncated, true, true),
+    ).toBeRejectedWithError('Data validation failed and repair not possible');
+
+    expect(mockOpLogStore.runDestructiveStateReplacement).not.toHaveBeenCalled();
+    expect(mockStore.dispatch).not.toHaveBeenCalled();
+  });
+
+  it('should log that a refused backup was legacy, since the migration line never runs', async () => {
+    // The refusal returns the same message on the legacy and modern paths, so
+    // the exported log is the only place the two can be told apart.
+    const errSpy = spyOn(OpLog, 'err');
+    const truncated = createMinimalValidBackup() as any;
+    delete truncated.task;
+    truncated.taskArchive = { ids: [], entities: {} };
+
+    await expectAsync(service.importCompleteBackup(truncated, true, true)).toBeRejected();
+
+    expect(errSpy).toHaveBeenCalledWith(
+      'BackupService: legacy backup refused, core slice missing',
+    );
   });
 
   it('should discard task-time accumulated against the replaced pre-import state', async () => {
@@ -228,9 +272,31 @@ describe('BackupService', () => {
 
       const meta = await service.captureRecoveryPointIfMeaningful('REMOTE_IMPORT');
 
-      expect(mockOpLogStore.pruneImportBackups).toHaveBeenCalledOnceWith(1);
+      expect(mockOpLogStore.pruneImportBackups).toHaveBeenCalledOnceWith(1, undefined);
       expect(mockOpLogStore.saveImportBackup).toHaveBeenCalledTimes(2);
       expect(meta?.backupId).toBe('b2');
+    });
+
+    it('should protect the snapshot being restored when the quota prune runs mid-restore', async () => {
+      mockOpLogStore.loadImportBackupById.and.resolveTo({
+        backupId: 'r1',
+        savedAt: 1,
+        state: createMinimalValidBackup(),
+      });
+      mockStateSnapshotService.getStateSnapshotAsync.and.resolveTo(
+        snapshotWithTask() as any,
+      );
+      mockOpLogStore.saveImportBackup.and.returnValues(
+        Promise.reject(new DOMException('full', 'QuotaExceededError')),
+        Promise.resolve({ backupId: 'b2', savedAt: 2 }),
+      );
+      mockOpLogStore.pruneImportBackups.and.resolveTo(2);
+
+      await service.restoreImportBackupById('r1');
+
+      // Pruning to the newest capture alone would delete r1 while it is still
+      // needed for a retry if the rest of the restore fails.
+      expect(mockOpLogStore.pruneImportBackups).toHaveBeenCalledOnceWith(1, 'r1');
     });
 
     it('should still fail when the retry after pruning fails too', async () => {
