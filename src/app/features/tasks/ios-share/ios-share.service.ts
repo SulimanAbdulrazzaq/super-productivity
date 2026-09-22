@@ -82,11 +82,14 @@ export class IosShareService {
       }
     }
     localStorage.setItem(RECEIPTS_KEY, JSON.stringify([...receipts]));
+    let invalidCount = 0;
     for (const share of shares) {
       // The native extension enforces the same existing external-input limits.
-      // Check again before a bridge payload becomes a synced task.
+      // Check again before a bridge payload becomes a synced task. Keep an
+      // invalid entry on disk but skip it, so it cannot block later captures.
       if (!share.text.trim() || share.text.length > 100_000) {
-        throw new Error('Invalid shared text');
+        invalidCount++;
+        continue;
       }
       if (!receipts.has(share.id)) {
         // A resume can overlap replay. Wait without a timeout/fail-open path,
@@ -130,6 +133,9 @@ export class IosShareService {
       await this._plugin.acknowledge({ id: share.id });
       receipts.delete(share.id);
       localStorage.setItem(RECEIPTS_KEY, JSON.stringify([...receipts]));
+    }
+    if (invalidCount > 0) {
+      throw new Error('Invalid shared text');
     }
   }
 }

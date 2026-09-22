@@ -33,7 +33,8 @@ enum ShareInbox {
         try FileManager.default.contentsOfDirectory(at: directory(), includingPropertiesForKeys: nil)
             .filter { $0.pathExtension == "json" }
             .sorted { $0.lastPathComponent < $1.lastPathComponent }
-            .map { try JSONDecoder().decode(SharedCapture.self, from: Data(contentsOf: $0)) }
+            // Skip (but keep) an unreadable file so it cannot block later captures.
+            .compactMap { try? JSONDecoder().decode(SharedCapture.self, from: Data(contentsOf: $0)) }
     }
 
     static func acknowledge(id: String) throws {

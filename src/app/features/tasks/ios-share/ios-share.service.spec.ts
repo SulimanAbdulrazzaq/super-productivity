@@ -180,6 +180,24 @@ describe('IosShareService', () => {
     expect(plugin.acknowledge).not.toHaveBeenCalled();
   });
 
+  it('imports later valid shares when an earlier share is invalid', async () => {
+    const validId = '0F1B7C9E-3D2A-4B5C-8E6F-7A8B9C0D1E2F';
+    plugin.getPending.and.resolveTo({
+      shares: [
+        { id, title: '', text: '   ' },
+        { id: validId, title: 'Valid', text: 'https://example.com' },
+      ],
+    });
+    loaded.next(true);
+    await expectAsync(service.importPending()).toBeRejected();
+    expect(store.dispatch).toHaveBeenCalledOnceWith(
+      jasmine.objectContaining({
+        task: jasmine.objectContaining({ id: validId, title: 'Valid' }),
+      }),
+    );
+    expect(plugin.acknowledge).toHaveBeenCalledOnceWith({ id: validId });
+  });
+
   it('serializes cold start and native resume events', async () => {
     let finish!: () => void;
     plugin.getPending.and.returnValue(
