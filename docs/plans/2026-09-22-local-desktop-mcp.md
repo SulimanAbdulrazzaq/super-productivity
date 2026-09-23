@@ -1,6 +1,6 @@
 # Local desktop MCP for Super Productivity
 
-Implementation plan · 22 September 2026 · **rev. 4**. Revised after three independent reviews: repo claims, external facts, and an implementation-readiness review. The rev. 1–3 history is in git (`git log -p -- docs/plans/2026-09-22-local-desktop-mcp.md`).
+Implementation plan · 22 September 2026 · **rev. 4** · implemented 23 September 2026 (see §8). Revised after three independent reviews: repo claims, external facts, and an implementation-readiness review. The rev. 1–3 history is in git (`git log -p -- docs/plans/2026-09-22-local-desktop-mcp.md`).
 
 **Decision.** Add an opt-in MCP endpoint to the running desktop app. It is served by the existing loopback listener and reuses the REST API's renderer routes for reads. The protocol handler is small and built in-repo, with no new dependency. There is a single credential with explicit scopes. Bounded read access ships first, then Inbox capture. Editing is out of scope until usage shows a need.
 
@@ -191,6 +191,43 @@ Strings are added only to `en.json`, via `T`.
   - Claude Desktop via `.mcpb`.
   - MAS dev build.
   - Snap.
+
+## 8. Implementation status (2026-09-23)
+
+Implemented on `claude/local-desktop-mcp-review-j0tgjv`. Each group of commits can be split into its own PR in this order:
+
+| PR  | Commits                                                                                                            | Scope                                                                  |
+| --- | ------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------- |
+| A   | `fix(local-rest-api): make the enable switch device-local and report status`                                       | simpleStore switch, default off, state/enable IPC, listen errors in UI |
+| B   | `build(mas,snap): allow the opt-in local API listener to bind 127.0.0.1`                                           | MAS `network.server`, Snap `network-bind`. Ship in its own release.    |
+| C   | `fix(local-rest-api): answer APP_NOT_READY until app data has loaded`                                              | readiness gate for REST and MCP                                        |
+| D   | `refactor(electron): extract secret-file helpers…`, then the `feat(assistant-access)` commits and the review fixes | `/mcp` endpoint, tools, capture, settings panel, `.mcpb` bridge, wiki  |
+
+**Verified here:**
+
+- Electron tests: 367/367, including the protocol, auth split, scopes, revocation, the userData-after-init regression and an end-to-end run of the stdio bridge.
+- Targeted Karma specs for the settings fields, the REST handler (readiness and the capture route) and the capture service all pass.
+- The official `@modelcontextprotocol/sdk` 1.30 client connects over Streamable HTTP. It negotiates 2025-11-25, lists and calls tools, gets tool errors for bad arguments and `-32602` for unknown tools, and is refused with a wrong key.
+- The `.mcpb` manifest validates against the mcpb v0.3 schema.
+
+**Still manual (before release):**
+
+- Claude Code and Codex against a real build.
+- Claude Desktop with the packed `.mcpb` on macOS and Windows.
+- A MAS dev build: confirm EPERM without the entitlement and listening with it.
+- A Snap install (core22).
+- Tray/minimize and renderer reload with assistant access on.
+
+**Follow-ups, not done:**
+
+- Publish the `.mcpb` as a release asset, and add an in-app download.
+- Revisit protocol 2026-07-28 once the SDKs and target clients speak it.
+- Idempotency keys for capture, only if duplicates are observed.
+- Moving the IPC sender check and rate limit out of "known gaps" needs an observed instance first.
+
+**Release notes need:**
+
+- The Local REST API switch is now per device and starts off after the update. Existing users switch it on again; the token is unchanged.
 
 ## Sources
 
