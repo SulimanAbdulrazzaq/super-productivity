@@ -135,6 +135,7 @@ const installMocks = (ctx) => {
       return {
         app: {
           getPath: () => ctx.userDataDir,
+          getVersion: () => '0.0.0-test',
         },
         ipcMain: {
           on: (eventName, handler) => {
@@ -195,9 +196,14 @@ const uninstallMocks = () => {
 // Modules that capture a mocked import (`electron.app`, `fs`) at require()
 // time. They have to be loaded cold with each copy too, or every copy would
 // share the first copy's userData dir and filesystem hooks.
-const coldDependencyPaths = ['simple-store.ts', 'secure-file.ts'].map((file) =>
-  path.resolve(__dirname, file),
-);
+const coldDependencyPaths = [
+  'simple-store.ts',
+  'secure-file.ts',
+  'mcp/assistant-access.ts',
+  'mcp/mcp-http.ts',
+  'mcp/mcp-tools.ts',
+  'mcp/mcp-protocol.ts',
+].map((file) => path.resolve(__dirname, file));
 
 const loadModule = (ctx) => {
   const resolved = require.resolve(localRestApiModulePath);

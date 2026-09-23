@@ -4,6 +4,10 @@ import { createServer, IncomingMessage, Server, ServerResponse } from 'http';
 import { randomBytes, randomUUID, timingSafeEqual } from 'crypto';
 import { join } from 'path';
 import { readSecretFile, writeSecretFile } from './secure-file';
+import { initAssistantAccess, isAssistantAccessEnabled } from './mcp/assistant-access';
+import { handleMcpHttpRequest, McpHttpDeps } from './mcp/mcp-http';
+import { RendererTimeoutError } from './mcp/mcp-tools';
+import { ASSISTANT_ACCESS_PATH } from './shared-with-frontend/assistant-access.model';
 import { IPC } from './shared-with-frontend/ipc-events.const';
 import { getIsAppReady, getWin } from './main-window';
 import { loadSimpleStoreAll, saveSimpleStore } from './simple-store';
@@ -253,6 +257,7 @@ const getQueryObject = (url: URL): Record<string, string | string[]> => {
 
 const forwardRequestToRenderer = async (
   payload: LocalRestApiRequestPayload,
+  timeoutMs: number = LOCAL_REST_API_TIMEOUT_MS,
 ): Promise<LocalRestApiResponsePayload> => {
   const mainWindow = getWin();
 
@@ -260,7 +265,7 @@ const forwardRequestToRenderer = async (
     const timeout = setTimeout(() => {
       pendingRequests.delete(payload.requestId);
       reject(new Error('Renderer request timed out'));
-    }, LOCAL_REST_API_TIMEOUT_MS);
+    }, timeoutMs);
 
     pendingRequests.set(payload.requestId, {
       resolve,
@@ -311,10 +316,57 @@ const getForcedDevToken = (): string => {
   return generatedForcedDevToken;
 };
 
+const mcpDeps: McpHttpDeps = {
+  isAllowedHost: (host) => !!host && ALLOWED_HOSTS.has(host),
+  isAtConcurrencyLimit: () =>
+    pendingRequests.size >= LOCAL_REST_API_MAX_CONCURRENT_REQUESTS,
+  parseBearerToken: (header) => parseBearerToken(header),
+  serverVersion: app.getVersion(),
+  forward: async (request) => {
+    if (!getIsAppReady()) {
+      return {
+        status: 503,
+        body: { ok: false, error: { code: 'APP_NOT_READY', message: '' } },
+      };
+    }
+    try {
+      const response = await forwardRequestToRenderer(
+        {
+          requestId: randomUUID(),
+          method: request.method,
+          path: request.path,
+          query: request.query ?? {},
+          body: request.body,
+          ...(request.source ? { source: request.source } : {}),
+        },
+        request.timeoutMs,
+      );
+      return { status: response.status, body: response.body };
+    } catch (error) {
+      if (error instanceof Error && error.message === 'Renderer request timed out') {
+        throw new RendererTimeoutError();
+      }
+      throw error;
+    }
+  },
+};
+
+const isAssistantAccessPath = (req: IncomingMessage): boolean => {
+  const pathname = new URL(req.url ?? '/', `http://${LOCAL_REST_API_HOST}`).pathname;
+  return pathname === ASSISTANT_ACCESS_PATH;
+};
+
 const handleHttpRequest = async (
   req: IncomingMessage,
   res: ServerResponse,
 ): Promise<void> => {
+  // The assistant endpoint shares this listener but not its switch, its
+  // credential or its (looser) Origin rule, so it is routed before any of them.
+  if (isAssistantAccessPath(req)) {
+    await handleMcpHttpRequest(req, res, mcpDeps);
+    return;
+  }
+
   // Reject everything while disabled. server.close() stops accepting new
   // sockets, but an in-flight keep-alive connection could still be served
   // during the close window; this makes the off switch immediate.
@@ -527,6 +579,21 @@ export const initLocalRestApi = (): void => {
     warn('[local-rest-api] Server error', error);
   });
 
+  initAssistantAccess({
+    onListenerNeedChanged: async () => {
+      if (isListenerWanted()) {
+        startServer();
+      } else {
+        stopServer();
+      }
+      await settleAfterApply();
+    },
+    getListenerStatus: () => ({
+      isListening,
+      ...(listenError ? { error: listenError } : {}),
+    }),
+  });
+
   if (isForceEnabledForDev()) {
     warn('[local-rest-api] Enabled by SP_FORCE_LOCAL_REST_API=1 for DEV runtime');
     localRestApiToken = getForcedDevToken();
@@ -602,8 +669,11 @@ const startServerIfDesired = (): void => {
   startServer();
 };
 
+/** The listener serves the REST API and assistant access; either keeps it up. */
+const isListenerWanted = (): boolean => isEnabled || isAssistantAccessEnabled();
+
 const stopServer = (): void => {
-  if (!server || !isListening) {
+  if (!server || !isListening || isListenerWanted()) {
     return;
   }
 
@@ -691,7 +761,7 @@ export const getLocalRestApiState = (): LocalRestApiState => ({
 
 /** Resolves once a pending listen() has bound or failed (bounded, just in case). */
 const settleAfterApply = async (): Promise<void> => {
-  if (!isEnabled || isListening || listenError) {
+  if (!isListenerWanted() || isListening || listenError) {
     return;
   }
   await Promise.race([

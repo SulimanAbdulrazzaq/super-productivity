@@ -19,6 +19,11 @@ export interface LocalRestApiRequestPayload {
   path: string;
   query: Record<string, string | string[]>;
   body?: unknown;
+  /**
+   * Set by the main process only, for assistant (MCP) calls. HTTP clients have
+   * no way to set it, so the renderer can reserve routes for it.
+   */
+  source?: 'mcp';
 }
 
 export interface LocalRestApiSuccessBody {
