@@ -192,20 +192,23 @@ const uninstallMocks = () => {
 };
 
 /** Loads a fresh copy of the module bound to `ctx`, with its own module state. */
-const simpleStoreModulePath = path.resolve(__dirname, 'simple-store.ts');
+// Modules that capture a mocked import (`electron.app`, `fs`) at require()
+// time. They have to be loaded cold with each copy too, or every copy would
+// share the first copy's userData dir and filesystem hooks.
+const coldDependencyPaths = ['simple-store.ts', 'secure-file.ts'].map((file) =>
+  path.resolve(__dirname, file),
+);
 
 const loadModule = (ctx) => {
   const resolved = require.resolve(localRestApiModulePath);
-  const resolvedStore = require.resolve(simpleStoreModulePath);
+  const resolvedDeps = coldDependencyPaths.map((dep) => require.resolve(dep));
   installMocks(ctx);
   delete require.cache[resolved];
-  // simple-store captures `electron.app` at require() time too, so it has to be
-  // cold as well or every copy would share the first copy's userData dir.
-  delete require.cache[resolvedStore];
+  resolvedDeps.forEach((dep) => delete require.cache[dep]);
   const loaded = require(localRestApiModulePath);
   // Dropping it again keeps the next load genuinely cold.
   delete require.cache[resolved];
-  delete require.cache[resolvedStore];
+  resolvedDeps.forEach((dep) => delete require.cache[dep]);
   uninstallMocks();
   return loaded;
 };
