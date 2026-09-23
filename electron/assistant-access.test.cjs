@@ -590,6 +590,71 @@ test('rotating the credential revokes the old one immediately', async () => {
   assert.equal(withNew.status, 200);
 });
 
+const { spawn } = require('node:child_process');
+
+/** Runs the Claude Desktop stdio bridge against this listener. */
+const runBridge = (accessKey, lines, expectedReplies) =>
+  new Promise((resolve, reject) => {
+    const child = spawn(
+      process.execPath,
+      [path.resolve(__dirname, '../tools/mcpb/server/index.js')],
+      {
+        env: {
+          ...process.env,
+          SP_MCP_URL: `http://127.0.0.1:${PORT}/mcp`,
+          SP_ACCESS_KEY: accessKey,
+        },
+      },
+    );
+    const replies = [];
+    let buffer = '';
+    child.stdout.on('data', (chunk) => {
+      buffer += chunk;
+      let newline;
+      while ((newline = buffer.indexOf('\n')) >= 0) {
+        replies.push(JSON.parse(buffer.slice(0, newline)));
+        buffer = buffer.slice(newline + 1);
+        if (replies.length === expectedReplies) {
+          child.kill();
+          resolve(replies);
+        }
+      }
+    });
+    child.on('error', reject);
+    setTimeout(() => {
+      child.kill();
+      reject(new Error(`bridge answered ${replies.length}/${expectedReplies}`));
+    }, 5000);
+    for (const line of lines) {
+      child.stdin.write(JSON.stringify(line) + '\n');
+    }
+  });
+
+test('the Claude Desktop stdio bridge relays a full session', async () => {
+  const replies = await runBridge(
+    credential,
+    [
+      rpc('initialize', { protocolVersion: '2025-06-18', capabilities: {} }, 1),
+      { jsonrpc: '2.0', method: 'notifications/initialized' },
+      rpc('tools/list', {}, 2),
+    ],
+    2,
+  );
+  assert.equal(replies[0].id, 1);
+  assert.equal(replies[0].result.protocolVersion, '2025-06-18');
+  assert.equal(replies[1].id, 2);
+  assert.deepEqual(
+    replies[1].result.tools.map((t) => t.name),
+    ['get_status', 'create_task'],
+  );
+});
+
+test('the bridge answers a rejected key with an error for the pending request', async () => {
+  const [reply] = await runBridge('sp_mcp_wrong', [rpc('tools/list', {}, 'x')], 1);
+  assert.equal(reply.id, 'x');
+  assert.match(reply.error.message, /access key/);
+});
+
 test('disabling assistant access refuses calls and stops the listener', async () => {
   const state = await ipc('ASSISTANT_ACCESS_SET_ENABLED', false);
   assert.equal(state.isListening, false);
