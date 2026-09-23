@@ -11,6 +11,11 @@ import { TagService } from '../../features/tag/tag.service';
 import { TODAY_TAG } from '../../features/tag/tag.const';
 import { DateService } from '../date/date.service';
 import { DataInitStateService } from '../data-init/data-init-state.service';
+import {
+  AssistantCaptureService,
+  parseAssistantCaptureInput,
+} from '../../features/tasks/assistant-capture/assistant-capture.service';
+import { ASSISTANT_CAPTURE_PATH } from '../../../../electron/shared-with-frontend/assistant-access.model';
 import { isTodayWithOffset } from '../../util/is-today.util';
 import { isValidDBDateStr } from '../../util/get-db-date-str';
 
@@ -362,6 +367,7 @@ export class LocalRestApiHandlerService {
   private readonly _tagService = inject(TagService);
   private readonly _dateService = inject(DateService);
   private readonly _store = inject(Store);
+  private readonly _assistantCaptureService = inject(AssistantCaptureService);
   // The main process only knows the renderer has booted, which happens before
   // the data is loaded — answering then would serve an empty task list as if it
   // were the user's data, and let a write land on top of half-hydrated state.
@@ -441,6 +447,14 @@ export class LocalRestApiHandlerService {
       );
     }
 
+    // Only the main process can mark a request as coming from assistant (MCP)
+    // access; over plain REST this route does not exist.
+    if (path === ASSISTANT_CAPTURE_PATH) {
+      return payload.source === 'mcp' && method === 'POST'
+        ? this._handleAssistantCapture(requestId, body)
+        : createErrorResponse(requestId, 404, 'NOT_FOUND', 'Route not found');
+    }
+
     if (method === 'GET' && path === '/status') {
       return this._handleGetStatus(requestId);
     }
@@ -482,6 +496,21 @@ export class LocalRestApiHandlerService {
     }
 
     return createErrorResponse(requestId, 404, 'NOT_FOUND', 'Route not found');
+  }
+
+  private async _handleAssistantCapture(
+    requestId: string,
+    body: unknown,
+  ): Promise<LocalRestApiResponsePayload> {
+    const input = parseAssistantCaptureInput(body);
+    if (!input) {
+      return createErrorResponse(requestId, 400, 'INVALID_INPUT', 'Invalid capture');
+    }
+    return createSuccessResponse(
+      requestId,
+      200,
+      await this._assistantCaptureService.capture(input),
+    );
   }
 
   private async _handleGetStatus(

@@ -10,6 +10,7 @@ import { TagService } from '../../features/tag/tag.service';
 import { TODAY_TAG } from '../../features/tag/tag.const';
 import { DateService } from '../date/date.service';
 import { DataInitStateService } from '../data-init/data-init-state.service';
+import { AssistantCaptureService } from '../../features/tasks/assistant-capture/assistant-capture.service';
 import { Task, TaskWithSubTasks, TaskArchive } from '../../features/tasks/task.model';
 import { TaskSharedActions } from '../../root-store/meta/task-shared.actions';
 import {
@@ -31,6 +32,7 @@ import {
 
 describe('LocalRestApiHandlerService', () => {
   let isDataLoaded$: BehaviorSubject<boolean>;
+  let assistantCaptureMock: jasmine.SpyObj<AssistantCaptureService>;
   let service: LocalRestApiHandlerService;
   let taskServiceMock: jasmine.SpyObj<TaskService>;
   let taskArchiveServiceMock: jasmine.SpyObj<TaskArchiveService>;
@@ -215,6 +217,11 @@ describe('LocalRestApiHandlerService', () => {
     dateServiceMock.getStartOfNextDayDiffMs.and.returnValue(0);
 
     isDataLoaded$ = new BehaviorSubject<boolean>(true);
+    assistantCaptureMock = jasmine.createSpyObj<AssistantCaptureService>(
+      'AssistantCaptureService',
+      ['capture'],
+    );
+    assistantCaptureMock.capture.and.resolveTo({ status: 'created', id: 'captured' });
 
     TestBed.configureTestingModule({
       providers: [
@@ -224,6 +231,7 @@ describe('LocalRestApiHandlerService', () => {
         { provide: ProjectService, useValue: projectServiceMock },
         { provide: TagService, useValue: tagServiceMock },
         { provide: DateService, useValue: dateServiceMock },
+        { provide: AssistantCaptureService, useValue: assistantCaptureMock },
         {
           provide: DataInitStateService,
           useValue: { isAllDataLoadedInitially$: isDataLoaded$ },
@@ -276,6 +284,41 @@ describe('LocalRestApiHandlerService', () => {
       isDataLoaded$.next(true);
       const ready = await sendRequestAndWait(createRequest('GET', '/tasks'));
       expect(ready.status).toBe(200);
+    });
+  });
+
+  describe('assistant capture route', () => {
+    beforeEach(() => {
+      service.init();
+    });
+
+    it('does not exist for plain REST requests', async () => {
+      const res = await sendRequestAndWait(
+        createRequest('POST', '/assistant/capture', { body: { title: 'x' } }),
+      );
+      expect(res.status).toBe(404);
+      expect(assistantCaptureMock.capture).not.toHaveBeenCalled();
+    });
+
+    it('captures for requests the main process marked as assistant calls', async () => {
+      const res = await sendRequestAndWait({
+        ...createRequest('POST', '/assistant/capture', { body: { title: ' x ' } }),
+        source: 'mcp',
+      });
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ ok: true, data: { status: 'created', id: 'captured' } });
+      expect(assistantCaptureMock.capture).toHaveBeenCalledOnceWith({ title: 'x' });
+    });
+
+    it('rejects an invalid capture', async () => {
+      const res = await sendRequestAndWait({
+        ...createRequest('POST', '/assistant/capture', {
+          body: { title: 'x', tagIds: [] },
+        }),
+        source: 'mcp',
+      });
+      expect(res.status).toBe(400);
+      expect(assistantCaptureMock.capture).not.toHaveBeenCalled();
     });
   });
 
