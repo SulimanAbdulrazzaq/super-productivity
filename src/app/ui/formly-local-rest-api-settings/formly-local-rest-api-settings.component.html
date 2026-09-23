@@ -42,7 +42,7 @@
         type="text"
         readonly
         [value]="token()"
-        (focus)="$any($event.target).select()"
+        (focus)="selectText($event)"
         [attr.aria-label]="T.GCF.MISC.LOCAL_REST_API_TOKEN | translate"
       />
     }

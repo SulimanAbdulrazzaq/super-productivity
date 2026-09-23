@@ -279,6 +279,33 @@ test('a scope revoked before the call runs is honoured', async () => {
   assert.equal(calls.length, 0);
 });
 
+test('a grant revoked while the renderer answers is honoured', async () => {
+  let scopes = [...READ, 'tasks:read_notes'];
+  const revokingForward = async (request) => {
+    const reply = await fakeForward().forward(request);
+    scopes = ['tasks:read'];
+    return reply;
+  };
+  const notes = await tools.runTool(
+    'get_task',
+    { id: 't1', includeNotes: true },
+    () => scopes,
+    revokingForward,
+  );
+  assert.equal(notes.isError, true);
+  assert.doesNotMatch(JSON.stringify(notes), /SECRET/);
+
+  scopes = [...READ];
+  const offForward = async (request) => {
+    const reply = await fakeForward().forward(request);
+    scopes = [];
+    return reply;
+  };
+  const list = await tools.runTool('list_tasks', {}, () => scopes, offForward);
+  assert.equal(list.isError, true);
+  assert.match(list.content[0].text, /^NOT_PERMITTED/);
+});
+
 test('create_task forwards a literal capture and reports the outcome', async () => {
   const { forward, calls } = fakeForward({
     '/assistant/capture': () => ({
@@ -360,7 +387,11 @@ const win = {
 Module._load = function patchedLoad(request, parent, isMain) {
   if (request === 'electron') {
     return {
-      app: { getPath: () => userDataDir, getVersion: () => '9.9.9' },
+      app: {
+        getPath: () => userDataDir,
+        getVersion: () => '9.9.9',
+        whenReady: () => Promise.resolve(),
+      },
       ipcMain: {
         on: (name, handler) => onHandlers.set(name, handler),
         handle: (name, handler) => handleHandlers.set(name, handler),
@@ -579,6 +610,25 @@ test('capture-only access cannot read and captures with the mcp source', async (
   const call = rendererCalls[rendererCalls.length - 1];
   assert.equal(call.path, '/assistant/capture');
   assert.equal(call.source, 'mcp');
+});
+
+// Overlapping changes must not persist a stale snapshot: here the scope write
+// would otherwise carry isEnabled: true after the switch went off, and access
+// would come back at the next launch.
+test('overlapping settings changes persist the latest state', async () => {
+  await Promise.all([
+    ipc('ASSISTANT_ACCESS_SET_ENABLED', false),
+    ipc('ASSISTANT_ACCESS_SET_SCOPES', ['tasks:capture']),
+  ]);
+  const settings = JSON.parse(
+    fs.readFileSync(path.join(userDataDir, 'simpleSettings'), 'utf8'),
+  );
+  assert.deepEqual(settings.assistantAccess, {
+    isEnabled: false,
+    scopes: ['tasks:capture'],
+  });
+  const state = await ipc('ASSISTANT_ACCESS_SET_ENABLED', true);
+  assert.equal(state.isListening, true);
 });
 
 test('rotating the credential revokes the old one immediately', async () => {

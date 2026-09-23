@@ -41,6 +41,8 @@ let isListening = false;
 // Set once the user toggles the API in this session, so the startup read of the
 // persisted setting can never overwrite a newer choice.
 let hasExplicitEnabledChoice = false;
+// Resolves once the persisted switch has been applied at startup.
+let startupRead: Promise<void> = Promise.resolve();
 // Why the last listen() failed, kept so the settings UI can say so instead of
 // showing a switched-on API that nothing serves. Cleared by the next start.
 let listenError: LocalRestApiListenError | undefined = undefined;
@@ -543,7 +545,10 @@ export const initLocalRestApi = (): void => {
     return token;
   });
 
-  ipcMain.handle(IPC.LOCAL_REST_API_GET_STATE, () => getLocalRestApiState());
+  ipcMain.handle(IPC.LOCAL_REST_API_GET_STATE, async () => {
+    await startupRead;
+    return getLocalRestApiState();
+  });
   ipcMain.handle(IPC.LOCAL_REST_API_SET_ENABLED, async (_ev, enabled: unknown) => {
     if (typeof enabled !== 'boolean') {
       throw new Error('Invalid enabled value');
@@ -551,6 +556,7 @@ export const initLocalRestApi = (): void => {
     // Forced-dev mode ignores the setting entirely; writing it would change
     // what the next normal launch does without the user having chosen that.
     if (!isForceEnabledForDev()) {
+      await startupRead;
       // Persist first: a switch that reports "off" but comes back on after a
       // restart would break the one promise the off switch makes.
       hasExplicitEnabledChoice = true;
@@ -603,13 +609,21 @@ export const initLocalRestApi = (): void => {
     return;
   }
 
-  void readPersistedEnabled().then((enabled) => {
-    // A toggle that landed while the file was being read is newer than it.
-    if (hasExplicitEnabledChoice) {
-      return;
-    }
+  startupRead = restorePersistedEnabled();
+};
+
+/**
+ * Applies the persisted switch once userData is final. initLocalRestApi() runs
+ * from initIpcInterfaces(), before start-app.ts moves userData for Snap and
+ * --user-data-dir; reading earlier would restore another profile's setting.
+ */
+const restorePersistedEnabled = async (): Promise<void> => {
+  await app.whenReady();
+  const enabled = await readPersistedEnabled();
+  // A toggle that landed while the file was being read is newer than it.
+  if (!hasExplicitEnabledChoice) {
     applyEnabled(enabled);
-  });
+  }
 };
 
 const toListenError = (code: string | undefined): LocalRestApiListenError => {

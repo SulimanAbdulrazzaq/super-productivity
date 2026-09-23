@@ -88,6 +88,16 @@ const forward = async (line) => {
     return;
   }
 
+  if (Array.isArray(message)) {
+    // The protocol has no batches since 2025-06-18; answer instead of hanging.
+    write({
+      jsonrpc: '2.0',
+      id: null,
+      error: { code: -32600, message: 'Batch requests are not supported' },
+    });
+    return;
+  }
+
   let reply;
   try {
     reply = await post(line);

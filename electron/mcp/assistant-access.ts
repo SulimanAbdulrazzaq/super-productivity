@@ -93,35 +93,46 @@ export const getAssistantAccessState = (): AssistantAccessState => ({
   ...getListenerStatus(),
 });
 
-const setEnabled = async (next: boolean): Promise<AssistantAccessState> => {
-  await loaded;
-  // Persist first: the switch must not report "off" and come back on at the
-  // next launch.
-  await persist({ ...toPersisted(), isEnabled: next });
-  isEnabled = next;
-  await onListenerNeedChanged();
-  return getAssistantAccessState();
+// Changes run one at a time: each persists a snapshot built from the state the
+// previous change left, so two overlapping changes cannot write a stale switch
+// or scope list that comes back at the next launch.
+let changeQueue: Promise<unknown> = Promise.resolve();
+const enqueue = <T>(change: () => Promise<T>): Promise<T> => {
+  const run = changeQueue.then(() => loaded).then(change);
+  changeQueue = run.catch(() => undefined);
+  return run;
 };
 
-const setScopes = async (input: unknown): Promise<AssistantAccessState> => {
-  await loaded;
-  const next = normalizeScopes(input);
-  await persist({ ...toPersisted(), scopes: next });
-  // Every request reads the scopes at dispatch time, so a narrowed grant
-  // applies to requests already in flight too.
-  scopes = next;
-  return getAssistantAccessState();
-};
+const setEnabled = (next: boolean): Promise<AssistantAccessState> =>
+  enqueue(async () => {
+    // Persist first: the switch must not report "off" and come back on at the
+    // next launch.
+    await persist({ ...toPersisted(), isEnabled: next });
+    isEnabled = next;
+    await onListenerNeedChanged();
+    return getAssistantAccessState();
+  });
 
-const rotateCredential = async (): Promise<AssistantAccessCredentialResult> => {
-  const credential = CREDENTIAL_PREFIX + randomBytes(32).toString('base64url');
-  const nextVerifier = hashCredential(credential);
-  // Durable before live, so a failed write can never bring the old credential
-  // back on the next launch.
-  writeSecretFile(getVerifierFilePath(), nextVerifier.toString('hex'), VERIFIER_LABEL);
-  verifier = nextVerifier;
-  return { credential, state: getAssistantAccessState() };
-};
+const setScopes = (input: unknown): Promise<AssistantAccessState> =>
+  enqueue(async () => {
+    const next = normalizeScopes(input);
+    await persist({ ...toPersisted(), scopes: next });
+    // Tools read the scopes when they run and again before answering, so a
+    // narrowed grant also applies to calls already in flight.
+    scopes = next;
+    return getAssistantAccessState();
+  });
+
+const rotateCredential = (): Promise<AssistantAccessCredentialResult> =>
+  enqueue(async () => {
+    const credential = CREDENTIAL_PREFIX + randomBytes(32).toString('base64url');
+    const nextVerifier = hashCredential(credential);
+    // Durable before live, so a failed write can never bring the old credential
+    // back on the next launch.
+    writeSecretFile(getVerifierFilePath(), nextVerifier.toString('hex'), VERIFIER_LABEL);
+    verifier = nextVerifier;
+    return { credential, state: getAssistantAccessState() };
+  });
 
 const loadPersisted = async (): Promise<void> => {
   let stored: unknown;
@@ -157,10 +168,19 @@ export const initAssistantAccess = (hooks: AssistantAccessHooks): void => {
   onListenerNeedChanged = hooks.onListenerNeedChanged;
   getListenerStatus = hooks.getListenerStatus;
 
-  const stored = readSecretFile(getVerifierFilePath(), VERIFIER_PATTERN, VERIFIER_LABEL);
-  verifier = stored ? Buffer.from(stored, 'hex') : undefined;
-
-  loaded = loadPersisted();
+  // Nothing is read before userData is final: this runs from
+  // initIpcInterfaces(), before start-app.ts moves userData for Snap and
+  // --user-data-dir, and reading earlier would pick up another profile's grant
+  // and key. Until then access stays off and every key is rejected.
+  loaded = app.whenReady().then(() => {
+    const stored = readSecretFile(
+      getVerifierFilePath(),
+      VERIFIER_PATTERN,
+      VERIFIER_LABEL,
+    );
+    verifier = stored ? Buffer.from(stored, 'hex') : undefined;
+    return loadPersisted();
+  });
 
   ipcMain.handle(IPC.ASSISTANT_ACCESS_GET_STATE, async () => {
     await loaded;

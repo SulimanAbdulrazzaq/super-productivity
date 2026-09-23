@@ -56,6 +56,11 @@ export class FormlyLocalRestApiSettingsComponent
 
   private readonly _snackService = inject(SnackService);
 
+  /** Selects a read-only field's text on focus, so it can be copied at once. */
+  selectText(event: FocusEvent): void {
+    (event.target as HTMLInputElement | HTMLTextAreaElement | null)?.select();
+  }
+
   ngOnInit(): void {
     void this._loadState();
   }

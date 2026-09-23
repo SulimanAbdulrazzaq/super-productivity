@@ -136,6 +136,7 @@ const installMocks = (ctx) => {
         app: {
           getPath: () => ctx.userDataDir,
           getVersion: () => '0.0.0-test',
+          whenReady: () => ctx.whenReady || Promise.resolve(),
         },
         ipcMain: {
           on: (eventName, handler) => {
@@ -1126,6 +1127,37 @@ test('the enable IPC persists the choice and a restart restores it', async () =>
   } finally {
     first.applyLocalRestApiEnabled(false);
     fs.rmSync(profileDir, { recursive: true, force: true });
+  }
+});
+
+// initLocalRestApi() runs before start-app.ts moves userData for Snap and
+// --user-data-dir, so the persisted switch must only be read once the app is
+// ready — otherwise every Snap launch reads the wrong profile.
+test('the persisted switch is read from the final userData dir', async () => {
+  const earlyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sp-lra-early-'));
+  const finalDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sp-lra-final-'));
+  fs.writeFileSync(
+    path.join(finalDir, 'simpleSettings'),
+    JSON.stringify({ localRestApiEnabled: true }),
+  );
+  let markReady;
+  const ctx = createContext({ port: takeIsolatedPort(), userDataDir: earlyDir });
+  ctx.whenReady = new Promise((resolve) => (markReady = resolve));
+  const isolated = loadModule(ctx);
+
+  try {
+    isolated.initLocalRestApi();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(isolated.getLocalRestApiState().isEnabled, false);
+
+    ctx.userDataDir = finalDir; // what start-app.ts does via app.setPath()
+    markReady();
+    await waitFor(() => isolated.getLocalRestApiState().isListening, 'listener');
+  } finally {
+    isolated.applyLocalRestApiEnabled(false);
+    await settleListen();
+    fs.rmSync(earlyDir, { recursive: true, force: true });
+    fs.rmSync(finalDir, { recursive: true, force: true });
   }
 });
 

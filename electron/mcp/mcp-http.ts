@@ -100,11 +100,6 @@ export const handleMcpHttpRequest = async (
   res: ServerResponse,
   deps: McpHttpDeps,
 ): Promise<void> => {
-  if (!isAssistantAccessEnabled()) {
-    writeError(res, 503, 'Assistant access is disabled');
-    return;
-  }
-
   // DNS rebinding: only loopback names this server is known by.
   if (!deps.isAllowedHost(req.headers.host)) {
     writeError(res, 403, 'Invalid Host header');
@@ -113,8 +108,15 @@ export const handleMcpHttpRequest = async (
 
   // No browser may talk to this endpoint, including an opaque (`null`) origin
   // from a sandboxed frame or a file:// page. MCP clients send no Origin.
+  // Checked before anything else answers, so a web page cannot even learn
+  // whether assistant access is switched on.
   if (req.headers.origin !== undefined) {
     writeError(res, 403, 'Requests from web origins are not allowed');
+    return;
+  }
+
+  if (!isAssistantAccessEnabled()) {
+    writeError(res, 503, 'Assistant access is disabled');
     return;
   }
 

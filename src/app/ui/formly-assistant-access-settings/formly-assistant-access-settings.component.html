@@ -65,7 +65,7 @@
         type="text"
         readonly
         [value]="newKey()"
-        (focus)="$any($event.target).select()"
+        (focus)="selectText($event)"
         [attr.aria-label]="T.GCF.MISC.ASSISTANT_ACCESS_KEY | translate"
       />
       <p
@@ -101,7 +101,7 @@
       readonly
       rows="3"
       [value]="claudeCodeSnippet()"
-      (focus)="$any($event.target).select()"
+      (focus)="selectText($event)"
       [attr.aria-label]="T.GCF.MISC.ASSISTANT_ACCESS_SETUP_CLAUDE_CODE | translate"
     ></textarea>
     <p class="hint">{{ T.GCF.MISC.ASSISTANT_ACCESS_SETUP_JSON | translate }}</p>
@@ -110,7 +110,7 @@
       readonly
       rows="10"
       [value]="jsonSnippet()"
-      (focus)="$any($event.target).select()"
+      (focus)="selectText($event)"
       [attr.aria-label]="T.GCF.MISC.ASSISTANT_ACCESS_SETUP_JSON | translate"
     ></textarea>
   }

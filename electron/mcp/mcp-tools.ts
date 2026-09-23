@@ -52,6 +52,8 @@ interface ToolSpec {
     args: Record<string, unknown>,
     scopes: readonly AssistantAccessScope[],
     forward: ForwardToRenderer,
+    /** The grant as it is now; read again after the renderer answered. */
+    getScopes: () => readonly AssistantAccessScope[],
   ) => Promise<McpToolResult>;
 }
 
@@ -337,7 +339,7 @@ const getTask: ToolSpec = {
       additionalProperties: false,
     },
   },
-  run: async (args, scopes, forward) => {
+  run: async (args, scopes, forward, getScopes) => {
     const unknownArg = findUnknownArg(args, ['id', 'includeNotes']);
     if (unknownArg) {
       return invalid(unknownArg);
@@ -369,10 +371,21 @@ const getTask: ToolSpec = {
       ...toTaskSummary(source),
       subTaskIds: Array.isArray(source.subTaskIds) ? source.subTaskIds : [],
     };
+    if (includeNotes && !getScopes().includes('tasks:read_notes')) {
+      // Revoked while the task was being fetched.
+      return fail(
+        'NOTES_NOT_PERMITTED',
+        'This connection may not read notes. The user can allow it in Super Productivity settings.',
+      );
+    }
     if (includeNotes) {
       const notes = typeof source.notes === 'string' ? source.notes : '';
       task.notes = notes.slice(0, MAX_NOTES_CHARS);
       task.notesTruncated = notes.length > MAX_NOTES_CHARS;
+    }
+    // Titles and subtask lists are not bounded by the app.
+    if (byteLength({ task }) > MAX_RESPONSE_BYTES) {
+      return fail('RESPONSE_TOO_LARGE', 'This task is too large to return.');
     }
     return ok({ task });
   },
@@ -441,7 +454,8 @@ const createTask: ToolSpec = {
     name: 'create_task',
     description:
       "Adds a new task to the user's Inbox with the given title and optional notes, exactly as written. " +
-      'No project, tag, date or other field is set, and "#tag"/"+project" text is kept literally. ' +
+      'It gets the same defaults as a task the user adds to the Inbox by hand; no project, tag or date ' +
+      'comes from the request, and "#tag"/"+project" text is kept literally. ' +
       'Retrying after an error can create a duplicate.',
     inputSchema: {
       type: 'object',
@@ -536,5 +550,12 @@ export const runTool = async (
   if (!tool) {
     return fail('NOT_PERMITTED', 'This connection may not use this tool.');
   }
-  return tool.run(args, scopes, forward);
+  const result = await tool.run(args, scopes, forward, getScopes);
+  // A grant revoked (or access switched off) while the renderer was answering
+  // must not still hand out the data. A capture that already ran is reported
+  // as such, since withholding it would invite a duplicate.
+  if (tool.scope !== 'tasks:capture' && !isGranted(tool, getScopes())) {
+    return fail('NOT_PERMITTED', 'This connection may not use this tool.');
+  }
+  return result;
 };
