@@ -19,15 +19,18 @@ import {
 import { dirname, join } from 'path';
 import { IPC } from './shared-with-frontend/ipc-events.const';
 import { getIsAppReady, getWin } from './main-window';
-import { GlobalConfigState } from '../src/app/features/config/global-config.model';
+import { loadSimpleStoreAll, saveSimpleStore } from './simple-store';
+import { SimpleStoreKey } from './shared-with-frontend/simple-store.const';
 import {
   LOCAL_REST_API_HOST,
   LOCAL_REST_API_MAX_BODY_BYTES,
   LOCAL_REST_API_MAX_CONCURRENT_REQUESTS,
   LOCAL_REST_API_PORT,
   LOCAL_REST_API_TIMEOUT_MS,
+  LocalRestApiListenError,
   LocalRestApiRequestPayload,
   LocalRestApiResponsePayload,
+  LocalRestApiState,
 } from './shared-with-frontend/local-rest-api.model';
 
 const JSON_HEADERS = {
@@ -38,12 +41,23 @@ const JSON_HEADERS = {
 let server: Server | null = null;
 let isInitialized = false;
 let isEnabled = false;
-// What the renderer's saved setting asks for, which is not the same thing as
+// What the persisted device-local setting asks for, which is not the same thing as
 // what the main process managed to do about it: enabling fails closed when the
 // token cannot be stored, and the saved setting stays `true` regardless. Kept
 // apart so a later recovery can tell "the user wants this on" from "it is on".
 let isEnabledDesired = false;
 let isListening = false;
+// Set once the user toggles the API in this session, so the startup read of the
+// persisted setting can never overwrite a newer choice.
+let hasExplicitEnabledChoice = false;
+// Why the last listen() failed, kept so the settings UI can say so instead of
+// showing a switched-on API that nothing serves. Cleared by the next start.
+let listenError: LocalRestApiListenError | undefined = undefined;
+// Set when enabling failed closed because the token could not be stored.
+let isTokenStorageFailed = false;
+// A listen() in flight resolves these once it either binds or errors, so the
+// enable IPC can answer with the outcome rather than a guess.
+let listenSettledResolvers: Array<() => void> = [];
 const pendingRequests = new Map<
   string,
   {
@@ -661,12 +675,32 @@ export const initLocalRestApi = (): void => {
     return token;
   });
 
+  ipcMain.handle(IPC.LOCAL_REST_API_GET_STATE, () => getLocalRestApiState());
+  ipcMain.handle(IPC.LOCAL_REST_API_SET_ENABLED, async (_ev, enabled: unknown) => {
+    if (typeof enabled !== 'boolean') {
+      throw new Error('Invalid enabled value');
+    }
+    // Forced-dev mode ignores the setting entirely; writing it would change
+    // what the next normal launch does without the user having chosen that.
+    if (!isForceEnabledForDev()) {
+      // Persist first: a switch that reports "off" but comes back on after a
+      // restart would break the one promise the off switch makes.
+      hasExplicitEnabledChoice = true;
+      await saveSimpleStore(SimpleStoreKey.LOCAL_REST_API_ENABLED, enabled);
+      applyLocalRestApiEnabled(enabled);
+      await settleAfterApply();
+    }
+    return getLocalRestApiState();
+  });
+
   server = createServer((req, res) => {
     void handleHttpRequest(req, res);
   });
 
   server.on('error', (error: NodeJS.ErrnoException) => {
     isListening = false;
+    listenError = toListenError(error.code);
+    settleListen();
     if (error.code === 'EADDRINUSE') {
       warn(
         `[local-rest-api] Port ${LOCAL_REST_API_PORT} is in use — API could not start. ` +
@@ -681,17 +715,53 @@ export const initLocalRestApi = (): void => {
     warn('[local-rest-api] Enabled by SP_FORCE_LOCAL_REST_API=1 for DEV runtime');
     localRestApiToken = getForcedDevToken();
     isEnabled = true;
+    isEnabledDesired = true;
     startServer();
+    return;
   }
+
+  void readPersistedEnabled().then((enabled) => {
+    // A toggle that landed while the file was being read is newer than it.
+    if (hasExplicitEnabledChoice) {
+      return;
+    }
+    applyEnabled(enabled);
+  });
 };
+
+const toListenError = (code: string | undefined): LocalRestApiListenError => {
+  if (code === 'EADDRINUSE') {
+    return 'PORT_IN_USE';
+  }
+  // A sandbox without the permission to accept connections (Mac App Store
+  // without com.apple.security.network.server, a Snap without network-bind)
+  // refuses the bind itself.
+  if (code === 'EPERM' || code === 'EACCES') {
+    return 'PERMISSION_DENIED';
+  }
+  return 'UNKNOWN';
+};
+
+const settleListen = (): void => {
+  const resolvers = listenSettledResolvers;
+  listenSettledResolvers = [];
+  resolvers.forEach((resolve) => resolve());
+};
+
+const waitForListenSettled = (): Promise<void> =>
+  new Promise((resolve) => {
+    listenSettledResolvers.push(resolve);
+  });
 
 const startServer = (): void => {
   if (!server || isListening) {
     return;
   }
 
+  listenError = undefined;
   server.listen(LOCAL_REST_API_PORT, LOCAL_REST_API_HOST, () => {
     isListening = true;
+    settleListen();
     log(
       `[local-rest-api] Listening on http://${LOCAL_REST_API_HOST}:${LOCAL_REST_API_PORT}`,
     );
@@ -712,6 +782,7 @@ const startServerIfDesired = (): void => {
   }
   log('[local-rest-api] Access token is available again — starting the server');
   isEnabled = true;
+  isTokenStorageFailed = false;
   startServer();
 };
 
@@ -739,20 +810,36 @@ const stopServer = (): void => {
   server.closeAllConnections();
 };
 
-export const updateLocalRestApiConfig = (cfg: GlobalConfigState): void => {
+/**
+ * Applies the enabled state in memory: mints the token if needed and starts or
+ * stops the listener. Persisting the choice is the caller's job — see the
+ * SET_ENABLED handler — so this stays synchronous and testable.
+ *
+ * The switch is deliberately owned by this device alone. It used to live in the
+ * synced misc config, which meant enabling the API on one computer started a
+ * listener on every other synced desktop the next time it sent its settings.
+ */
+export const applyLocalRestApiEnabled = (enabled: boolean): void => {
+  hasExplicitEnabledChoice = true;
+  applyEnabled(enabled);
+};
+
+const applyEnabled = (enabled: boolean): void => {
   const isForcedForDev = isForceEnabledForDev();
-  const nextEnabled = isForcedForDev || !!cfg.misc.isLocalRestApiEnabled;
+  const nextEnabled = isForcedForDev || enabled;
   isEnabledDesired = nextEnabled;
   // Ensure a token exists whenever the server is (about to be) serving, so
   // enabling the API never starts an unreachable server with no credential.
   if (nextEnabled) {
     try {
       localRestApiToken = isForcedForDev ? getForcedDevToken() : ensureToken();
+      isTokenStorageFailed = false;
     } catch (error) {
       // Without a durably stored token the credential would die on the next
       // launch, so fail closed rather than start a server the user cannot keep
       // using. The renderer surfaces the failure when it reads the token.
       warn('[local-rest-api] Could not store the access token — not starting', error);
+      isTokenStorageFailed = true;
       isEnabled = false;
       stopServer();
       return;
@@ -771,6 +858,38 @@ export const updateLocalRestApiConfig = (cfg: GlobalConfigState): void => {
   if (isEnabled) {
     startServer();
   } else {
+    listenError = undefined;
     stopServer();
+  }
+};
+
+export const getLocalRestApiState = (): LocalRestApiState => ({
+  isEnabled: isEnabledDesired,
+  isListening,
+  ...(isTokenStorageFailed
+    ? { error: 'TOKEN_STORAGE' as const }
+    : isEnabledDesired && listenError
+      ? { error: listenError }
+      : {}),
+});
+
+/** Resolves once a pending listen() has bound or failed (bounded, just in case). */
+const settleAfterApply = async (): Promise<void> => {
+  if (!isEnabled || isListening || listenError) {
+    return;
+  }
+  await Promise.race([
+    waitForListenSettled(),
+    new Promise<void>((resolve) => setTimeout(resolve, 2000)),
+  ]);
+};
+
+const readPersistedEnabled = async (): Promise<boolean> => {
+  try {
+    const all = await loadSimpleStoreAll();
+    return all[SimpleStoreKey.LOCAL_REST_API_ENABLED] === true;
+  } catch (error) {
+    warn('[local-rest-api] Could not read the enabled setting — staying off', error);
+    return false;
   }
 };

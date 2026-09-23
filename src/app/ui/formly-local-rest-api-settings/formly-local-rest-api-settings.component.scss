@@ -1,4 +1,4 @@
-.local-rest-api-token {
+.local-rest-api-settings {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
@@ -6,6 +6,13 @@
   margin-bottom: var(--s2);
 }
 
+.hint,
+.status {
+  margin: 0;
+  color: var(--text-color-muted);
+}
+
+.status.is-error,
 .token-error {
   margin: 0;
   color: var(--color-danger);

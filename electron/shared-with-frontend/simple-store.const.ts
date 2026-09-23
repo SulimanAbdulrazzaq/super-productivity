@@ -18,4 +18,7 @@ export enum SimpleStoreKey {
   // The main window's last known un-maximized size/position (#10058).
   // electron-window-state cannot be trusted with these either, see window-restore-bounds.ts.
   WINDOW_RESTORE_BOUNDS = 'windowRestoreBounds',
+  // Main-owned, never-synced switch for the local REST API. It used to live in
+  // the synced misc config, which started the listener on every synced desktop.
+  LOCAL_REST_API_ENABLED = 'localRestApiEnabled',
 }

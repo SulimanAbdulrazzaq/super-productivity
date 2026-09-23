@@ -20,6 +20,7 @@ import { PluginNodeExecutionElectronApi } from './shared-with-frontend/plugin-no
 import {
   LocalRestApiRequestPayload,
   LocalRestApiResponsePayload,
+  LocalRestApiState,
 } from './shared-with-frontend/local-rest-api.model';
 import { ElectronDistChannel } from './shared-with-frontend/get-dist-channel';
 import { JiraElectronApi } from './shared-with-frontend/jira-request.model';
@@ -285,4 +286,6 @@ export interface ElectronAPI {
   sendLocalRestApiResponse(payload: LocalRestApiResponsePayload): void;
   getLocalRestApiToken(): Promise<string>;
   regenerateLocalRestApiToken(): Promise<string>;
+  getLocalRestApiState(): Promise<LocalRestApiState>;
+  setLocalRestApiEnabled(isEnabled: boolean): Promise<LocalRestApiState>;
 }
