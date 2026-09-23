@@ -1,4 +1,5 @@
 import { Injectable, inject } from '@angular/core';
+import { toSignal } from '@angular/core/rxjs-interop';
 import { Store } from '@ngrx/store';
 import { firstValueFrom } from 'rxjs';
 import typia from 'typia';
@@ -9,6 +10,7 @@ import { ProjectService } from '../../features/project/project.service';
 import { TagService } from '../../features/tag/tag.service';
 import { TODAY_TAG } from '../../features/tag/tag.const';
 import { DateService } from '../date/date.service';
+import { DataInitStateService } from '../data-init/data-init-state.service';
 import { isTodayWithOffset } from '../../util/is-today.util';
 import { isValidDBDateStr } from '../../util/get-db-date-str';
 
@@ -360,6 +362,13 @@ export class LocalRestApiHandlerService {
   private readonly _tagService = inject(TagService);
   private readonly _dateService = inject(DateService);
   private readonly _store = inject(Store);
+  // The main process only knows the renderer has booted, which happens before
+  // the data is loaded — answering then would serve an empty task list as if it
+  // were the user's data, and let a write land on top of half-hydrated state.
+  private readonly _isDataLoaded = toSignal(
+    inject(DataInitStateService).isAllDataLoadedInitially$,
+    { initialValue: false },
+  );
   private _isInitialized = false;
 
   private _dispatchDeadlineChange(taskId: string, change: DeadlineChange): void {
@@ -422,6 +431,15 @@ export class LocalRestApiHandlerService {
   ): Promise<LocalRestApiResponsePayload> {
     const { method, path, requestId, body, query } = payload;
     const segments = path.split('/').filter(Boolean);
+
+    if (this._isDataLoaded() !== true) {
+      return createErrorResponse(
+        requestId,
+        503,
+        'APP_NOT_READY',
+        'App data is still loading',
+      );
+    }
 
     if (method === 'GET' && path === '/status') {
       return this._handleGetStatus(requestId);
