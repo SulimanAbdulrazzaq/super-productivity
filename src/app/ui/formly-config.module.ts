@@ -23,6 +23,7 @@ import { FormlySliderComponent } from './formly-slider/formly-slider.component';
 import { FormlyTagSelectionComponent } from './formly-tag-selection/formly-tag-selection.component';
 import { FormlyBtnComponent } from './formly-button/formly-btn.component';
 import { FormlyLocalRestApiSettingsComponent } from './formly-local-rest-api-settings/formly-local-rest-api-settings.component';
+import { FormlyAssistantAccessSettingsComponent } from './formly-assistant-access-settings/formly-assistant-access-settings.component';
 import { FormlyImageInputComponent } from './formly-image-input/formly-image-input.component';
 import { ColorInputComponent } from '../features/config/color-input/color-input.component';
 import { StartPageSelectComponent } from '../features/config/start-page-select/start-page-select.component';
@@ -73,6 +74,11 @@ import { FormlyDatePickerComponent } from './formly-date-picker/formly-date-pick
         {
           name: 'local-rest-api-settings',
           component: FormlyLocalRestApiSettingsComponent,
+          wrappers: [],
+        },
+        {
+          name: 'assistant-access-settings',
+          component: FormlyAssistantAccessSettingsComponent,
           wrappers: [],
         },
         {

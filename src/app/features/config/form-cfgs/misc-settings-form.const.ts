@@ -47,6 +47,10 @@ export const MISC_SETTINGS_FORM_CFG: ConfigFormSection<MiscConfig> = {
             // config — a synced switch started the API on every desktop.
             type: 'local-rest-api-settings',
           },
+          {
+            // Keyless for the same reason: device-local, owned by main.
+            type: 'assistant-access-settings',
+          },
         ]
       : []) as LimitedFormlyFieldConfig<MiscConfig>[]),
     // Hidden on channels that self-update (store/snap builds); the value still
