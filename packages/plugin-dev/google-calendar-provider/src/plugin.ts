@@ -257,6 +257,9 @@ const isDeclined = (event: GoogleCalendarEvent): boolean =>
 const isSpManagedEvent = (event: GoogleCalendarEvent): boolean =>
   typeof event.extendedProperties?.private?.spTaskId === 'string';
 
+/** Minimum lookback for the read window, like the iCal provider's START_OFFSET. */
+const LOOKBACK_MS = 2 * 60 * 60 * 1000;
+
 /** Fetch events from a single calendar. */
 const fetchEventsForCalendar = async (
   http: PluginHttp,
@@ -266,12 +269,18 @@ const fetchEventsForCalendar = async (
 ): Promise<PluginSearchResult[]> => {
   const syncRangeWeeks = parseInt(cfg.syncRangeWeeks || '', 10) || 2;
   const now = new Date();
-  // Google applies `timeMin` to an event's END time, so `timeMin = now` drops
-  // an event on the first poll after it ends (#10190). Anchor the window to
-  // start-of-today (UTC), like the CalDAV provider, so events that ended
-  // earlier today stay in the schedule/agenda.
+  // Google applies `timeMin` (exclusive) to an event's END time, so
+  // `timeMin = now` drops an event on the first poll after it ends (#10190).
+  // Start the window at the user's LOCAL start of day, so events that ended
+  // earlier today stay in the schedule/agenda, or LOOKBACK_MS ago if that is
+  // earlier, so a late-evening event is still shown just after midnight.
+  const localStartOfDayMs = new Date(
+    now.getFullYear(),
+    now.getMonth(),
+    now.getDate(),
+  ).getTime();
   const timeMin = new Date(
-    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()),
+    Math.min(localStartOfDayMs, now.getTime() - LOOKBACK_MS),
   ).toISOString();
   const timeMax = new Date(
     now.getTime() + syncRangeWeeks * 7 * 24 * 60 * 60 * 1000,
