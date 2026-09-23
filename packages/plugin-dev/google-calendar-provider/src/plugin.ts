@@ -266,7 +266,13 @@ const fetchEventsForCalendar = async (
 ): Promise<PluginSearchResult[]> => {
   const syncRangeWeeks = parseInt(cfg.syncRangeWeeks || '', 10) || 2;
   const now = new Date();
-  const timeMin = now.toISOString();
+  // Google applies `timeMin` to an event's END time, so `timeMin = now` drops
+  // an event on the first poll after it ends (#10190). Anchor the window to
+  // start-of-today (UTC), like the CalDAV provider, so events that ended
+  // earlier today stay in the schedule/agenda.
+  const timeMin = new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()),
+  ).toISOString();
   const timeMax = new Date(
     now.getTime() + syncRangeWeeks * 7 * 24 * 60 * 60 * 1000,
   ).toISOString();

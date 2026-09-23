@@ -443,6 +443,32 @@ describe('Google Calendar Plugin', () => {
 
       expect(results).toHaveLength(1);
     });
+
+    // #10190: Google applies `timeMin` to an event's END time. With
+    // `timeMin = now`, an event dropped out of the schedule/agenda on the first
+    // poll after it ended. The window must start at the beginning of today.
+    it('keeps events that already ended earlier today in the query window', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-05-14T16:05:00Z'));
+      const mockHttp = {
+        get: vi.fn().mockResolvedValue({ items: [makeEvent({})] }),
+        post: vi.fn(),
+        put: vi.fn(),
+        patch: vi.fn(),
+        delete: vi.fn(),
+      };
+
+      await definition.getNewIssuesForBacklog!(
+        { readCalendarIds: ['primary'], syncRangeWeeks: '2' } as any,
+        mockHttp as any,
+      );
+
+      const params = mockHttp.get.mock.calls[0][1].params;
+      expect(params.timeMin).toBe('2026-05-14T00:00:00.000Z');
+      expect(new Date(params.timeMin).getTime()).toBeLessThanOrEqual(
+        new Date('2026-05-14T16:00:00Z').getTime(),
+      );
+    });
   });
 
   describe('timeBlock.upsertEvent', () => {
