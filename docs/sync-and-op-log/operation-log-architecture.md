@@ -779,6 +779,16 @@ Where the provider enforces CAS, a revision mismatch aborts the write and a
 later cycle downloads before retrying. The best-effort backends cannot broadly
 guarantee that every simultaneous write race will abort.
 
+With no saved format preference, discovery joins existing v2/v3 files, and an
+empty folder gets `EMPTY_FOLDER_SYNC_FORMAT` in `file-based-sync-format.ts`: v2,
+as in v19.1. The v3 empty-folder default (#10289) stays off until its snapshot,
+interrupted-write and legacy-overwrite follow-ups land. Discovery ignores v16
+`__meta_` files; the v2/v3 readers still stop normal syncs with
+`LegacySyncFormatDetectedError`, and a confirmed force overwrite writes the
+empty-folder format. Saved `isUseSplitSyncFiles: false` keeps v2 behavior;
+`true` explicitly opts into migration. Provider errors never establish
+emptiness. Discovery is target-scoped, in memory, and does not persist a choice.
+
 The v3 migration is one-way for a sync folder. It leaves a v3 tombstone in the
 legacy `sync-data.json` location so clients that do not understand the split
 format stop instead of recreating an independent v2 history.
@@ -807,6 +817,15 @@ IDs deduplicate ops still in the local log, while vector clocks carry causality.
    committed revision (#10239). The next cycle downloads/applies that baseline
    before retrying; rejection does not acknowledge local ops, write the file, or
    advance the cursor. Warm-cache uploads retain the conditional PUT check.
+   A v2 ops upload only extends a file this client applied, with or without
+   retained ops: a snapshot-only file (for example another device's
+   `SYNC_IMPORT` seed) that appears after this client's download is loaded
+   first instead of being replaced. Full-state snapshot uploads still write
+   unconditionally (except REPAIR), so a device answering an empty download
+   with its own `SYNC_IMPORT` can still replace a seed that landed after its
+   check. The split format does not follow this yet: it appends to a staged,
+   unapplied read (e.g. a server-migration probe) and skips the cold-read check
+   without a committed revision (#10395).
    Legacy ops without `sv` use the file's
    `syncVersion` as a conservative upper bound. After local compaction prunes
    such an op's applied ID, a later file write advances this upper bound past
@@ -842,11 +861,16 @@ IDs deduplicate ops still in the local log, while vector clocks carry causality.
    rule: an upload that finds an unseen base is refused as a retryable
    conflict, so a stale client cannot append to a replacement it never
    hydrated (in v2, overwriting its snapshot with stale state). Before the
-   first recorded clock (e.g. the first sync after upgrading) neither check
-   runs: there is no baseline to judge by, a forced seq-0 download would show
-   a conflict dialog whenever local ops are pending, and a refused upload
-   could stay refused behind the rev pre-check. A replacement that lands in
-   that window goes unnoticed (known gap, #10258).
+   first recorded clock (e.g. the first sync after upgrading) the reader
+   judges the base by its op-log vector clock instead: every snapshot it
+   hydrated or wrote is merged into that clock, so an uncovered base is one it
+   never loaded, and pending local ops alone do not flag it (#10258). It skips
+   the check while a local full-state op is unsynced: a backup restore or
+   clean slate resets the clock to a fresh client id, and that op's upload
+   replaces the remote anyway. The writer check still needs a recorded clock; a sync cycle downloads before it
+   uploads, so the reader check runs first. The rev pre-check also waits for a
+   recorded clock, so that first sync reads the file once and commits its
+   clock.
    This optional metadata requires no schema bump: older readers ignore it,
    but older writers can omit it. Masked dominating replacements written by,
    or subsequently rewritten by, those clients remain a mixed-version gap;
@@ -1059,6 +1083,43 @@ When operations are rejected (either local or remote):
 - `getUnsynced()` excludes rejected ops (won't re-upload)
 - Compaction may eventually delete old rejected ops
 
+A rejection explained by a commuting task-time crossing is not replaced
+(#10214): conflict detection applies a remote edit that commutes with a task's
+pending time work and leaves the pending ops alone, so their clocks miss it and
+the server rejects them. When the rejection's `existingClock` is the clock of
+that applied remote row, every pending op of the task moves past it in place
+(`rebaseCommutingTimeDeltaRejections` → `rebasePendingLocalOps`): same id, seq
+and payload, fresh clock. A replacement op would replay a `syncTimeSpent` delta
+twice (the rejected original still replays, or a snapshot already holds it), and
+an LWW snapshot would turn the delta into an absolute write over a third
+device's concurrent time. The applied row is the causal proof, so no seq-0
+re-download is needed. The snapshot path runs instead unless every condition
+below holds:
+
+- **Every moved op was rejected by this upload**, which stored none of them on
+  the server. Any other pending op may be one that another tab uploaded and has
+  not marked synced yet (acknowledgements are deferred past piggyback
+  processing). The move also holds the UPLOAD lock, so no other tab uploads
+  meanwhile.
+- **Moved ops commute with every later op of the task the server already
+  accepted from this client** (`isDisjointMergeEligible`). Next to a crossing
+  delta the server accepts this client's own delta and then each later op, which
+  dominates it. Receivers apply the moved ops after those, so a moved first
+  rename would win over an accepted second rename. Ops of any entity type that
+  declare the task count, such as a planner move.
+- **Neither side touches `tagIds`, `projectId`, `parentId`, `dueDay` or
+  `dueWithTime`** (`touchesCrossEntityTaskFields`). Ops of other entity types
+  write those fields in their reducers without declaring the task (deleting a
+  tag rewrites every task's `tagIds`), so no check here sees them. A moved tag
+  assignment would land after a tag deletion and revive the deleted tag.
+
+A raised counter of an op the state cache covers is written into the cache clock
+too, because boot rebuilds the durable clock from that clock plus the op tail.
+Snapshot saves and compaction clear the per-tab clock cache before they read the
+clock, so no tab writes a state cache that misses a counter another tab raised
+in place. The write re-asserts the sync epoch first (see "The sync-epoch fence"
+in the contributor sync model).
+
 ### Archive-Wins Rule
 
 When a `moveToArchive` operation conflicts with a field-level update (e.g., rename, time tracking changes), the archive operation **always wins** regardless of timestamps. This bypasses the normal LWW timestamp comparison because archiving represents explicit user intent that should not be reversed by a concurrent field update.
@@ -1083,6 +1144,7 @@ Same-batch restores (#10220) — restart replay is status-blind, so a rejected b
 - A `restoreTask` whose root is already active is ignored, as `handleRestoreTask` ignores it: its payload subtasks are not treated as restored and the restore point does not move.
 - Ordinary task updates do not create missing tasks in the pre-scan: a rejected update between archive and restore cannot make the restore look like a duplicate or suppress a later winning update.
 - Logs replayed after upgrading may apply an LWW Update the pre-#10220 filter skipped; state moves to what op-by-op apply produces.
+- A whole-task `recreatesEntityAfterDelete` update after a same-batch delete counts as a restore (#10381). A fresh device or a restart gets the delete, the recreate and later snapshots of the task in one batch, and must apply those snapshots like a device that got them in separate syncs. A `'patch'` recreate does not count: `lwwUpdateMetaReducer` ignores it for an absent task. Like a restore of an active root, a recreate of a task that is already back does not move the restore point. A recreate that reducer drops because its project or parent is gone still counts, so a later unflagged update re-adds the task with that dangling `projectId`/`parentId`, as it does op by op; skipping it only in bulk would bring the divergence back.
 - Known gaps (no observed occurrence yet): a subtask restored on its own under a still-archived parent is not detected; `restoreDeletedTask` (undo delete) is not treated as a restore, so a same-batch LWW Update after it is still skipped; the pre-scan keeps one restore point per task, so when one batch archives and restores the same task more than once, an LWW Update between an earlier restore and a later archive is still skipped (as before #10220).
 
 Both levels only work if the archive op DECLARES the entity. A client awake on
@@ -1300,12 +1362,17 @@ and
 
 ### Compaction Trigger Coordination
 
-The 500-ops compaction trigger uses a persistent counter stored in `state_cache.compactionCounter`:
+The 500-ops compaction trigger (`COMPACTION_THRESHOLD`) counts in memory, in
+`OperationLogEffects`:
 
-- Each atomic append increments the durable counter
-- Counter persists across app restarts
-- Counter is reset after successful compaction
-- The in-memory mirror avoids an IndexedDB read on every threshold check
+- Each local operation write increments the counter; at the threshold a
+  background compaction starts
+- The counter resets after a compaction that ran; it does not survive a restart
+- Across restarts, the hydrator's startup check (`compactIfBloated()`) compacts
+  once per boot when the log holds more than `STARTUP_COMPACTION_OP_THRESHOLD`
+  ops, some of them synced
+- Nothing increments `state_cache.compactionCounter` any more: it only seeds the
+  in-memory counter (in practice 0), and compaction resets it
 
 ### Device Identity and Legacy Data
 

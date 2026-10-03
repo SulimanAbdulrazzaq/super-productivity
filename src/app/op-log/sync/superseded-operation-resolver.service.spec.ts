@@ -358,6 +358,125 @@ describe('SupersededOperationResolverService', () => {
       expect(appendedOp.timestamp).toBe(1000); // Preserved from original
     });
 
+    it('re-uploads only the fields a readable edit wrote, as a patch (#10379)', async () => {
+      const supersededOp = createMockOperation(
+        'op-1',
+        'TASK',
+        'task-1',
+        { clientA: 5 },
+        1000,
+      );
+      supersededOp.actionType = ActionType.TASK_SHARED_UPDATE;
+      supersededOp.payload = {
+        actionPayload: {
+          task: { id: 'task-1', changes: { title: 'Renamed', notes: undefined } },
+          clearedFields: ['notes'],
+        },
+        entityChanges: [],
+      };
+      mockVectorClockService.getCurrentVectorClock.and.resolveTo({ clientA: 3 });
+      // Another device's done toggle is in state; a replace would re-send it.
+      mockConflictResolutionService.getCurrentEntityState.and.resolveTo({
+        id: 'task-1',
+        title: 'Renamed',
+        isDone: true,
+      });
+
+      await service.resolveSupersededLocalOps([{ opId: 'op-1', op: supersededOp }]);
+
+      expect(mockConflictResolutionService.createLWWUpdateOp).toHaveBeenCalledWith(
+        'TASK',
+        'task-1',
+        { title: 'Renamed', notes: undefined },
+        TEST_CLIENT_ID,
+        jasmine.any(Object),
+        1000,
+        'patch',
+        undefined,
+        true,
+      );
+      expectAtomicRejection(['op-1']);
+    });
+
+    // Released receivers (v18.15.0-v19.1.0) replace a habit with a 'replace'
+    // snapshot that cannot carry its `type`; repair then resets it.
+    it('re-uploads a superseded habit snapshot as a patch', async () => {
+      const habit = { id: 'cnt-1', title: 'Habit', type: 'StopWatch', countOnDay: {} };
+      mockVectorClockService.getCurrentVectorClock.and.resolveTo({});
+      mockConflictResolutionService.getCurrentEntityState.and.resolveTo(habit);
+      mockConflictResolutionService.createLWWUpdateOp.and.callFake(
+        (entityType, entityId, entityState, clientId, vectorClock, timestamp, mode) => ({
+          ...createMockOperation('replacement', entityType, entityId, vectorClock),
+          actionType: `[${entityType}] LWW Update` as ActionType,
+          payload: {
+            actionPayload: entityState as Record<string, unknown>,
+            entityChanges: [],
+            lwwUpdateMode: mode ?? 'replace',
+          },
+          clientId,
+          timestamp,
+        }),
+      );
+
+      await service.resolveSupersededLocalOps([
+        {
+          opId: 'op-1',
+          op: createMockOperation('op-1', 'SIMPLE_COUNTER', 'cnt-1', { clientA: 1 }),
+        },
+      ]);
+
+      const appendedOp = mockOpLogStore.appendWithVectorClockOverwrite.calls.first()
+        .args[0] as Operation;
+      expect(appendedOp.payload).toEqual(
+        jasmine.objectContaining({ actionPayload: habit, lwwUpdateMode: 'patch' }),
+      );
+    });
+
+    // Receivers ignore a marked patch for an absent habit, so a recreation is
+    // marked first and then stays a replace.
+    it('re-uploads a superseded habit recreation as a marked replace', async () => {
+      const habit = { id: 'cnt-1', title: 'Habit', type: 'StopWatch', countOnDay: {} };
+      mockVectorClockService.getCurrentVectorClock.and.resolveTo({});
+      mockConflictResolutionService.getCurrentEntityState.and.resolveTo(habit);
+      mockConflictResolutionService.createLWWUpdateOp.and.callFake(
+        (entityType, entityId, entityState, clientId, vectorClock, timestamp, mode) => ({
+          ...createMockOperation('replacement', entityType, entityId, vectorClock),
+          actionType: `[${entityType}] LWW Update` as ActionType,
+          payload: {
+            actionPayload: entityState as Record<string, unknown>,
+            entityChanges: [],
+            lwwUpdateMode: mode ?? 'replace',
+          },
+          clientId,
+          timestamp,
+        }),
+      );
+      const supersededRecreation: Operation = {
+        ...createMockOperation('op-1', 'SIMPLE_COUNTER', 'cnt-1', { clientA: 1 }),
+        actionType: '[SIMPLE_COUNTER] LWW Update' as ActionType,
+        payload: {
+          actionPayload: habit,
+          entityChanges: [],
+          lwwUpdateMode: 'replace',
+          recreatesEntityAfterDelete: true,
+        },
+      };
+
+      await service.resolveSupersededLocalOps([
+        { opId: 'op-1', op: supersededRecreation },
+      ]);
+
+      const appendedOp = mockOpLogStore.appendWithVectorClockOverwrite.calls.first()
+        .args[0] as Operation;
+      expect(appendedOp.payload).toEqual(
+        jasmine.objectContaining({
+          actionPayload: habit,
+          lwwUpdateMode: 'replace',
+          recreatesEntityAfterDelete: true,
+        }),
+      );
+    });
+
     it('preserves recreate guards and appends their relationship follow-ups (#8997)', async () => {
       const supersededOp: Operation = {
         ...createMockOperation('op-1', 'TASK', 'task-1', { clientA: 5 }, 1_000),
